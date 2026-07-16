@@ -32,6 +32,8 @@ not just the final instructions.
   - [Stack](#stack)
   - [Backend and data](#backend-and-data)
   - [Scalability](#scalability)
+  - [Architecture sketch](#architecture-sketch)
+  - [AI tooling](#ai-tooling)
 
 ---
 
@@ -93,11 +95,11 @@ _To be written once the implementation is underway._
 ### Approach
 
 Plan before building. With AI-assisted development the leverage is in planning
-and fast iteration, so we settle decisions and design up front, then execute
+and fast iteration, so I settle decisions and design up front, then execute
 quickly against a clear plan.
 
 **Algorithmic framing.** The mutant check is Connect Four's win condition, not
-tic-tac-toe: we slide a length-4 window across an arbitrary `N x N` grid in four
+tic-tac-toe: I slide a length-4 window across an arbitrary `N x N` grid in four
 directions (horizontal, vertical, both diagonals) and count matches, with early
 exit the moment the second sequence is found.
 
@@ -126,7 +128,7 @@ architecture diagram rather than physically deployed.
 - **Architecture:** separate backend and frontend, rather than a single
   full-stack app. This keeps a clean API/UI boundary and mirrors a realistic
   service split.
-- **Frontend:** Next.js. Slightly heavy for a single input page, but it gives us
+- **Frontend:** Next.js. Slightly heavy for a single input page, but it gives me
   a fast, well-understood React setup with good tooling.
 - **Backend:** a dedicated Node/TypeScript API service (framework and database
   under Backend and data, below).
@@ -134,11 +136,11 @@ architecture diagram rather than physically deployed.
 ### Backend and data
 
 - **Framework:** Fastify. Fast, first-class TypeScript, and built-in JSON-schema
-  validation, which we want anyway to validate the `dna` payload and return clean
+  validation, which I want anyway to validate the `dna` payload and return clean
   `400`s (distinct from the spec's `403` for a valid-but-non-mutant DNA).
 - **Database:** PostgreSQL. Records are stored as **append-only rows**
   `(id, dna, is_mutant, created_at)`.
-- **Interpretation of "1 record per DNA":** the spec line is ambiguous. We read
+- **Interpretation of "1 record per DNA":** the spec line is ambiguous. I read
   it as *one row per submitted DNA payload* (not one row per grid string), stored
   append-only, rather than as a deduplication / uniqueness constraint. This is a
   deliberate reading, documented so it is clearly a choice and not an oversight;
@@ -153,7 +155,7 @@ architecture diagram rather than physically deployed.
 
 The API must tolerate 100 to 1M req/s. A single-process local demo cannot
 literally ingest 1M req/s: the network stack and event loop cap out in the tens
-of thousands per process. So we build the correct patterns locally and document
+of thousands per process. So I build the correct patterns locally and document
 how a deployed system reaches the top of the range. Deployment itself is out of
 scope. **1M req/s is unattainable in a demo like this; the design is the
 deliverable, and that volume is reached by replication, not by one box.**
@@ -200,8 +202,87 @@ the local in-process implementation swaps cleanly for a durable, shared one.
   Demonstrable with a load generator (`autocannon` / `k6`) showing flat ack
   latency and a bounded DB write rate while the buffer absorbs a burst.
 - **Deployed (documented in the architecture diagram):** swap the in-process
-  queue for a durable shared queue (Redis Stream / Kafka), run stateless API
-  instances behind a load balancer, use Redis for shared stats counters, and
-  shard Postgres (by DNA hash) for durable write throughput. A load balancer
-  scales the app tier; the data tier scales separately via batching, the queue,
-  and sharding.
+  queue for a durable shared queue (SQS), run stateless API instances behind a
+  load balancer, use Redis for shared stats counters, and shard Postgres (by DNA
+  hash) for durable write throughput. SQS is managed and elastic, so it absorbs
+  the "aggressive fluctuations" from the spec with no ops overhead, and its batch
+  receive feeds the batched-insert worker directly. A load balancer scales the
+  app tier; the data tier scales separately via batching, the queue, and
+  sharding.
+
+### Architecture sketch
+
+A rough first pass at the base local architecture. Polished diagrams (including
+the scaled topology) come later, with the detailed plan.
+
+Three components, all running locally:
+
+- **Frontend (Next.js):** a page to enter the DNA strings and show the result.
+  Calls the backend over HTTP.
+- **Backend API (Fastify):** exposes `POST /mutant/` and `GET /stats/`. Holds the
+  `isMutant` algorithm, request validation, the in-memory stats counters, and the
+  in-process write queue with its batch-flush worker.
+- **Database (PostgreSQL):** the append-only records table and the persisted
+  counters.
+
+Request flow:
+
+- **`POST /mutant/`:** validate the payload, run `isMutant`, increment the
+  matching stats counter, enqueue the record, and respond `200` (mutant) or `403`
+  (not). The batch worker drains the queue into Postgres asynchronously.
+- **`GET /stats/`:** read the in-memory counters and return the counts and ratio.
+
+```
+  +--------------+       HTTP         +-------------------------------+
+  |   Frontend   |  POST /mutant/     |          Backend API          |
+  |  (Next.js)   |  GET  /stats/      |           (Fastify)           |
+  |              | <----------------> |                               |
+  +--------------+                    |  validation                   |
+                                      |  isMutant algorithm           |
+                                      |  stats counters (in memory)   |
+                                      |  write queue + batch worker   |
+                                      +---------------+---------------+
+                                                      | batched INSERT
+                                                      v
+                                             +------------------+
+                                             |    PostgreSQL    |
+                                             |  records table   |
+                                             |  counters        |
+                                             +------------------+
+```
+
+### AI tooling
+
+AI assistance is allowed for this test, so I am treating the AI workflow itself
+as part of the engineering. The setup is deliberately proportionate: build
+custom sub-agents only where there is a real gap, and reuse the strong tooling
+that already exists for the rest.
+
+**Working model.** The main agent is used for planning, coordination, and
+maintaining this development log. All build, test, and design work is delegated
+to focused sub-agents, so each task runs with the right expertise and a clean
+context.
+
+**Custom sub-agents** (in `.claude/agents/`), one per gap:
+
+- **`fastify-api`** — the backend: Fastify routing and schema validation, the
+  Postgres data layer, and the queue, batch worker, and counters. Owns the error
+  contract (400 for malformed input, 403 for valid-but-non-mutant).
+- **`nextjs-frontend`** — the Next.js DNA-input page and API calls. Delegates
+  visual/UX work to the existing design skills.
+- **`test-author`** — Vitest unit and integration tests, targeting >80% coverage,
+  biased toward the algorithm edge cases.
+- **`performance`** — load testing (autocannon / k6), queue backpressure checks,
+  and Lighthouse on the frontend.
+
+**Reused, not rebuilt:**
+
+- **UX/UI** — the existing `frontend-design` and `ui-ux-pro-max` skills, invoked
+  by `nextjs-frontend`.
+- **Review** — the `code-reviewer` agent and the `setup-code-review` post-commit
+  hook, both part of my existing global setup, so nothing is installed per-project
+  here.
+
+**Grounding.** A repo-root `CLAUDE.md` holds the shared project context every
+agent reads: stack, structure, conventions, scope guardrails, the encoded
+decisions above, and the delegation policy.
