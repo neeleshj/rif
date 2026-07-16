@@ -1,5 +1,16 @@
 # RIF Technical Test: Mutant Detector
 
+```
+    A=T    G=C    T=A    C=G    A=T    G=C
+     \ \  / /      \ \  / /      \ \  / /
+      \ \/ /        \ \/ /        \ \/ /
+       \/\/          \/\/          \/\/
+       /\/\          /\/\          /\/\
+      / /\ \        / /\ \        / /\ \
+     / /  \ \      / /  \ \      / /  \ \
+    C=G    A=T    G=C    T=A    C=G    A=T
+```
+
 > **Rent It Furnished, Technical Test 2026**
 > Detect whether a human is a mutant based on their DNA sequence.
 
@@ -18,6 +29,7 @@ not just the final instructions.
 - [Development Log](#development-log)
   - [Approach](#approach)
   - [Order of work](#order-of-work)
+  - [Stack](#stack)
 
 ---
 
@@ -91,18 +103,28 @@ exit the moment the second sequence is found.
 
 1. Initialise the git repository, with meaningful commits from the start.
 2. Stack choice (language / runtime).
-3. Tech choice (frameworks, libraries, DB, tooling, and hosting).
+3. Tech choice (frameworks, libraries, DB, tooling).
 4. Architecture.
 5. AI tooling: define project-specific skills / sub-agents tuned to the stack.
 6. Plan all remaining elements, one requirement at a time.
 7. Rough plan of the API and the frontend.
 8. Build the API.
 9. Build the frontend.
-10. Test and deploy to a single EC2 instance.
+10. Test.
 
-Hosting is a single EC2 instance running the database, backend, and frontend.
-It mirrors the interviewer's environment, is free-tier eligible, and gives us a
-normal always-on process (real connection pooling, in-process caching, DB on the
-box). A single instance will not literally serve 1M req/s, so scalability stays a
-design-and-justify item: in-process cache plus async writes now, with a
-horizontal-scaling story documented in the architecture diagram.
+The project runs locally. Deployment is out of scope, as it is not a graded
+requirement. Scalability is treated as a design-and-justify item: an in-process
+cache plus async writes, with the horizontal-scaling approach documented in the
+architecture diagram rather than physically deployed.
+
+### Stack
+
+- **Language / runtime:** Node.js with TypeScript, for type safety and one
+  language across the whole project.
+- **Architecture:** separate backend and frontend, rather than a single
+  full-stack app. This keeps a clean API/UI boundary and mirrors a realistic
+  service split.
+- **Frontend:** Next.js. Slightly heavy for a single input page, but it gives us
+  a fast, well-understood React setup with good tooling.
+- **Backend:** a dedicated Node/TypeScript API service (framework and database
+  chosen next, under tech choice).
