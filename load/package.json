@@ -1,0 +1,15 @@
+{
+  "name": "@rif/load",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Load-test scripts for the RIF mutant-detector API (Phase 6).",
+  "scripts": {
+    "mutant": "node mutant.js",
+    "mutant:saturate": "node mutant.js --saturate",
+    "stats": "node stats.js"
+  },
+  "dependencies": {
+    "autocannon": "^8.0.0"
+  }
+}

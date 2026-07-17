@@ -1,0 +1,466 @@
+{
+  "info": {
+    "name": "RIF Mutant Detector API",
+    "description": "API tests for the RIF technical test mutant detector.\n\nSetup: start the API with `npm run dev` (or `npm run dev -w @rif/api`). It listens on http://localhost:3001 by default; change the `baseUrl` collection variable to point elsewhere.\n\nEvery request asserts its expected status and body, so you can use Collection Runner to execute the whole suite at once.\n\nContract:\n- 200 = mutant\n- 403 = evaluable DNA (N >= 4) with fewer than two sequences\n- 400 = input that cannot be evaluated: non-square, characters outside ATCG, empty, missing, or a grid smaller than 4x4\n- 503 = write queue saturated (backpressure), or a failed /health dependency check\n\nEvery /mutant/ response carries a `message` explaining its outcome, so a 403 says why it is a 403.\n\nNote: the Stats requests are order-dependent when run via Collection Runner, since the mutant requests above them increment the counters.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3001",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Dependency-checking probe. Verifies the database with a cheap SELECT 1 (bounded by a short timeout, so a hung DB fails fast rather than hanging the probe) and reports each check in the body.\n\n200 = every check ok. 503 = a dependency is down; the body names which one.\n\nThis single endpoint does liveness and readiness together, which is the pragmatic choice for a local single-process project. A production setup would split /health (liveness, no dependency checks) from /ready (readiness, checks dependencies)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('reports overall status ok', function () {",
+                  "    pm.expect(pm.response.json().status).to.eql('ok');",
+                  "});",
+                  "pm.test('reports the database dependency check', function () {",
+                  "    var checks = pm.response.json().checks;",
+                  "    pm.expect(checks).to.be.an('object');",
+                  "    pm.expect(checks.database).to.eql('ok');",
+                  "});",
+                  "pm.test('answers quickly enough to be a load-balancer probe', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(1000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mutant detection",
+      "item": [
+        {
+          "name": "Mutant (spec example) -> 200",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"ATGCGA\", \"CAGTGC\", \"TTATGT\", \"AGAAGG\", \"CCCCTA\", \"TCACTG\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "The exact example from the test PDF. Contains three sequences (a diagonal AAAA, a vertical GGGG, and a horizontal CCCC), so it is a mutant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 200 OK for a mutant', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('body reports isMutant true', function () {",
+                  "    pm.expect(pm.response.json().isMutant).to.eql(true);",
+                  "});",
+                  "pm.test('body explains the outcome', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/mutant detected/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Not a mutant -> 403",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"ATGCGA\", \"CAGTGC\", \"TTATTT\", \"AGACGG\", \"GCGTCA\", \"TCACTG\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "Evaluable DNA (N >= 4) with fewer than two sequences, so not a mutant. The spec repurposes 403 to mean 'not a mutant' rather than its usual 'forbidden'.\n\nThis is the only remaining 403 case: a grid too small to evaluate (N < 4) is a 400 instead. The message field says which of the two happened, so the body is self-explanatory."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 403 Forbidden for a non-mutant', function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "pm.test('body reports isMutant false', function () {",
+                  "    pm.expect(pm.response.json().isMutant).to.eql(false);",
+                  "});",
+                  "pm.test('explains that fewer than two sequences were found', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/fewer than two sequences/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lowercase is normalised -> 200",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"atgcga\", \"cagtgc\", \"ttatgt\", \"agaagg\", \"ccccta\", \"tcactg\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "The spec example in lowercase. Input is normalised (uppercased) before validation, so this is accepted and stored uppercase."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('lowercase input is normalised and detected as mutant', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().isMutant).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Single long run is NOT a mutant -> 403",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"AAAAAA\", \"TGTGTG\", \"CACACA\", \"GTGTGT\", \"ACACAC\", \"TGTGTG\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "Row 0 is a run of SIX identical letters, and it is the only run in the grid (rows 1-5 are built so consecutive cells differ along every line: horizontal, vertical, and both diagonals).\n\nA run of 4+ counts as exactly ONE sequence, and a mutant needs MORE THAN ONE, so this is not a mutant. This pins down the run-counting interpretation: a longer run does not count as multiple overlapping windows.\n\nPair this with the next request, which is the same grid plus a second run."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a single run, however long, is one sequence and not a mutant', function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Long run PLUS a second run -> 200",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"AAAAAA\", \"GGTGTG\", \"GACACA\", \"GTGTGT\", \"GCACAC\", \"TGTGTG\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "The previous grid with a second sequence added: a vertical GGGG down column 0 (rows 1-4). Two sequences now, so this IS a mutant.\n\nTogether with the previous request this is the control pair that proves the 'more than one sequence' threshold: the ONLY difference is the added second run."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adding a second run flips it to mutant', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().isMutant).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Validation (400s)",
+      "item": [
+        {
+          "name": "Grid smaller than 4 -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"AT\", \"GC\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "A grid below 4x4 is square and uses only ATCG, but it can never contain a sequence of four, so it cannot be evaluated against the mutant rule at all. We treat that as a client error (400) rather than reporting 'not a mutant' (403).\n\nTwo reasons: a 400 is more informative than an unhelpful 403, and a 403 would persist the record and inflate count_human_dna with inputs that were never evaluable, polluting the stats. Nothing is written or counted here.\n\nCaveat: the spec defines the input as an N x N table and sets no minimum for N, so this is our reading rather than something the spec mandates."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('N<4 is not evaluable, so 400 not 403', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('explains the grid is too small', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/too small|at least 4/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Non-square grid -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"ATGC\", \"CAGTGC\", \"TACG\", \"GCAT\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "Rows must all be the same length as the array (N x N). Nothing is persisted on a 400.\n\nUses 4 rows so the grid clears the minimum-size gate and it is squareness that rejects it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 400', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('explains the grid is not square', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/square/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid character -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dna\": [\"ATGX\", \"CAGT\", \"TTAT\", \"AGAA\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "Only A, T, C, G are permitted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 400', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('names the invalid character', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/invalid character/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Empty dna array -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"dna\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 400', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing dna field -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{baseUrl}}/mutant/",
+              "host": ["{{baseUrl}}"],
+              "path": ["mutant", ""]
+            },
+            "description": "Rejected by the Fastify JSON schema on the body shape."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 400', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Stats and metrics",
+      "item": [
+        {
+          "name": "GET /stats/",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/stats/",
+              "host": ["{{baseUrl}}"],
+              "path": ["stats", ""]
+            },
+            "description": "Served from in-memory counters (O(1)), never a COUNT(*) scan. Freshness is exposed via Cache-Control and Last-Modified headers rather than the body, so the body stays the exact shape the spec requires."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('body has the exact spec shape', function () {",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b).to.have.property('count_mutant_dna');",
+                  "    pm.expect(b).to.have.property('count_human_dna');",
+                  "    pm.expect(b).to.have.property('ratio');",
+                  "});",
+                  "pm.test('counts are non-negative numbers', function () {",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.count_mutant_dna).to.be.at.least(0);",
+                  "    pm.expect(b.count_human_dna).to.be.at.least(0);",
+                  "});",
+                  "pm.test('ratio equals mutant / human (0 when no humans)', function () {",
+                  "    var b = pm.response.json();",
+                  "    var expected = b.count_human_dna === 0 ? 0 : b.count_mutant_dna / b.count_human_dna;",
+                  "    pm.expect(Number(b.ratio)).to.be.closeTo(expected, 0.0001);",
+                  "});",
+                  "pm.test('sends short-TTL cache header for CDN absorption', function () {",
+                  "    pm.expect(pm.response.headers.get('Cache-Control')).to.include('max-age');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            },
+            "description": "Prometheus exposition. Aggregated in-process, so it stays O(1) per scrape regardless of traffic. Watch rif_queue_depth and rif_buffer_fill_ratio under load."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('exposes the expected metrics', function () {",
+                  "    var t = pm.response.text();",
+                  "    pm.expect(t).to.include('rif_requests_total');",
+                  "    pm.expect(t).to.include('rif_request_duration_seconds');",
+                  "    pm.expect(t).to.include('rif_queue_depth');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
