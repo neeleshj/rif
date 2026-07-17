@@ -1,0 +1,36 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env"],
+  "globalEnv": [
+    "DATABASE_URL",
+    "API_PORT",
+    "NODE_ENV",
+    "MAX_GRID_SIZE",
+    "QUEUE_MAX_SIZE",
+    "BATCH_SIZE",
+    "BATCH_INTERVAL_MS",
+    "LOG_LEVEL",
+    "LOG_SAMPLE_RATE",
+    "PORT",
+    "BACKEND_URL"
+  ],
+  "tasks": {
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "lint": {},
+    "typecheck": {
+      "dependsOn": ["^build"]
+    }
+  }
+}

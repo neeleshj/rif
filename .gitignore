@@ -12,6 +12,17 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.next/
+.turbo/
+
+# Test coverage
+coverage/
+
 # Logs
 *.log
 
