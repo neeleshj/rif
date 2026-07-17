@@ -244,12 +244,15 @@
 }
 
 .stepValue {
-  min-width: 2.6rem;
+  /* Wide enough for the longest label (12 x 12) so the stepper does not resize
+     as the size crosses 9 to 10. Includes the padding, since box-sizing is
+     border-box. */
+  min-width: 5rem;
   text-align: center;
   font-family: var(--font-mono);
   font-weight: 500;
   border-inline: 1px solid var(--border);
-  padding: 0.35rem 0;
+  padding: 0.35rem 0.75rem;
   color: var(--text);
 }
 
