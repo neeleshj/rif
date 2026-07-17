@@ -289,13 +289,38 @@ the read test holds roughly 1,000 (100 connections at pipelining 10). Pipelining
 buys throughput by queueing requests, and queueing shows up as per-request
 latency. The read path's higher latency is that trade, not a slower endpoint.
 
-Zero load shedding here is also expected rather than lucky: at the default
-`QUEUE_MAX_SIZE` the buffer never fills, so nothing needs shedding. Backpressure
-has to be provoked deliberately with a small queue
-(`QUEUE_MAX_SIZE=500 npm run dev -w @rif/api`, then `npm run mutant:saturate`),
-at which point excess writes return `503` and the buffer stays bounded instead of
-growing until the process dies. A non-zero 503 count there is the system working,
-not failing, which is why the metrics count shed load separately from real errors.
+Zero load shedding in that first run is expected rather than lucky: at 50
+requests in flight the accept rate never outruns the flush rate, so the buffer
+never fills and nothing needs shedding. To see backpressure, it has to be
+provoked.
+
+**Saturation** (`npm run mutant:saturate`: 200 connections at pipelining 10,
+about 2,000 in flight, 15s):
+
+| Metric | Result |
+| ------ | ------ |
+| Accepted (2xx) | **115,000** |
+| Shed (503) | **268,187** |
+| 4xx | **0** |
+| Throughput | **25,545 req/s** average, sustained throughout |
+| Latency | p50 **69 ms**, p99 **147 ms** (max 5,194 ms) |
+
+This is the design working, not failing. The arithmetic says why: the API accepts
+at roughly 25.5k/s while the worker flushes durably at `BATCH_SIZE` /
+`BATCH_INTERVAL_MS` = 500 per 100ms = **5k/s**. The buffer fills at ~20k/s net,
+so a 100,000-slot queue saturates in about five seconds, and everything beyond it
+is shed. The service **absorbed what it could durably persist, rejected the rest
+with 503, kept serving at 25.5k req/s, and never grew memory until it died**.
+That is the whole purpose of a bounded buffer: fail predictably at the edge
+rather than collapse in the middle.
+
+The tail is honest too: a 5.2s max latency shows queueing under heavy contention,
+which is exactly what the p99 of 147ms at 2,000 in flight implies.
+
+A non-zero 503 count here is healthy behaviour, which is why the metrics count
+shed load (`rif_load_shed_total`) separately from real errors
+(`rif_errors_total`). Conflating them would make correct backpressure fire an
+error-rate alert.
 
 Scripts and a guide to reading the output are in [load/README.md](load/README.md).
 
