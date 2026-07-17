@@ -216,15 +216,27 @@ function runFreeGrid(n: number, rng: Rng): Grid {
  * every time. A plain random fill was not: its chance of stumbling into two runs
  * grows with n, and the button promises a human.
  *
- * For `wantMutant: true` we then plant two runs on cells that provably do not
- * overlap, so the second can never overwrite the first. Both survive, and two
- * runs on a grid that had none is "more than one sequence", which is the API's
- * definition of a mutant. Planting each run with an independent random position
- * used to let the second land on top of the first, leaving one run and a 403
- * from a button that said "mutant".
+ * For `wantMutant: true` we then plant two runs that are guaranteed to read as
+ * two distinct sequences, on two counts:
+ *
+ * 1. Their cells provably do not overlap, so the second cannot overwrite the
+ *    first. Planting each run at an independent random position used to let the
+ *    second land on top of the first, leaving one run and a 403 from a button
+ *    that said "mutant".
+ * 2. They use two different bases. Non-overlapping is not on its own enough:
+ *    the detector counts MAXIMAL runs, so two runs of the same base that are
+ *    collinear and contiguous (say CCCC directly above CCCC in one column) merge
+ *    into a single CCCCCCCC, which is one sequence and therefore a human. A
+ *    maximal run is by definition all one letter, so two different letters can
+ *    never merge. That makes the guarantee structural rather than a matter of
+ *    the odds.
+ *
+ * A planted run may still be extended by matching cells from the base grid. That
+ * is harmless: a longer run is still one sequence, and the two runs still have
+ * different letters, so they stay two.
  *
  * Note this does not re-implement the detector, which lives in the API. The
- * guarantee comes from how the cells are chosen.
+ * guarantee comes from how the cells and bases are chosen.
  *
  * n < MIN_GRID_SIZE cannot hold a run at all, so no mutant exists to build and
  * the run-free grid is returned as-is. The API rejects such a grid as invalid.
@@ -243,8 +255,17 @@ export function randomGrid(n: number, wantMutant: boolean, rng: Rng = Math.rando
     rng,
   );
 
-  for (const placement of [first, second]) {
-    const base = pick(BASES, rng);
+  // Two different bases, so the two runs can never merge into one maximal run.
+  const firstBase = pick(BASES, rng);
+  const secondBase = pick(
+    BASES.filter((base) => base !== firstBase),
+    rng,
+  );
+
+  for (const [placement, base] of [
+    [first, firstBase],
+    [second, secondBase],
+  ] as const) {
     for (const [r, c] of placement.cells) grid[r]![c] = base;
   }
   return grid;

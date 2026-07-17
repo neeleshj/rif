@@ -31,35 +31,66 @@ function lcg(seed: number): Rng {
   };
 }
 
+/** Cell lookup that answers undefined off the edge, including negative columns. */
+function at(dna: string[], r: number, c: number): string | undefined {
+  return dna[r]?.[c];
+}
+
 /**
- * Independent oracle: count runs of four identical letters in all four
- * directions. Deliberately not the production detector (which lives in the API)
- * and deliberately not shared with it, so a bug in one cannot hide in the other.
- * Obviously correct beats clever here.
+ * Independent oracle: count MAXIMAL runs of four-or-more identical letters in
+ * all four directions.
+ *
+ * This is the rule the project settled on and the API implements: a run of 4+ is
+ * ONE sequence however long it is, so a lone long run is never a mutant. The
+ * rejected reading counts every matching 4-window, which scores a run of eight
+ * as 5. That mattered: this oracle used to count windows, so it passed a grid
+ * whose two planted runs had merged into one and hid a real bug in randomGrid.
+ *
+ * Deliberately not the production detector (which lives in the API) and
+ * deliberately not shared with it: the same rule, implemented separately, so a
+ * bug in one cannot hide in the other. Where the detector walks forward from
+ * every cell and skips mid-run starts, this walks each line end to end and
+ * splits it into groups of one repeated letter, which is a different enough
+ * shape to be a real cross-check.
  */
-function countSequences(dna: string[]): number {
+function sequenceLetters(dna: string[]): string[] {
   const directions = [
     [0, 1],
     [1, 0],
     [1, 1],
     [1, -1],
   ] as const;
-  const rows = dna.length;
-  let count = 0;
+  const found: string[] = [];
   for (const [dr, dc] of directions) {
-    for (let r = 0; r < rows; r += 1) {
+    for (let r = 0; r < dna.length; r += 1) {
       for (let c = 0; c < (dna[r]?.length ?? 0); c += 1) {
-        const first = dna[r]![c]!;
-        if (first === undefined || first === '') continue;
-        let run = true;
-        for (let k = 1; k < 4 && run; k += 1) {
-          if (dna[r + dr * k]?.[c + dc * k] !== first) run = false;
+        // Walk only from the start of a line: a cell with no predecessor in this
+        // direction. Every cell on the grid belongs to exactly one such line.
+        if (at(dna, r - dr, c - dc) !== undefined) continue;
+
+        let letter: string | undefined;
+        let run = 0;
+        for (let k = 0; ; k += 1) {
+          const cell = at(dna, r + dr * k, c + dc * k);
+          if (cell !== undefined && cell === letter) {
+            run += 1;
+            continue;
+          }
+          // The group just ended (or the line did): score it, then start the next.
+          if (run >= 4 && letter !== undefined) found.push(letter);
+          if (cell === undefined) break;
+          letter = cell;
+          run = 1;
         }
-        if (run) count += 1;
       }
     }
   }
-  return count;
+  return found;
+}
+
+/** How many maximal runs of four-or-more the grid holds. */
+function countSequences(dna: string[]): number {
+  return sequenceLetters(dna).length;
 }
 
 describe('countSequences (the test oracle itself)', () => {
@@ -74,8 +105,33 @@ describe('countSequences (the test oracle itself)', () => {
     expect(countSequences(['AGGA', 'ACAG', 'GACA', 'AATG'])).toBe(1); // down-left
   });
 
-  it('counts overlapping windows in a run of five', () => {
-    expect(countSequences(['AAAAA', 'CTGCC', 'CAGCG', 'TTCCC', 'TATTA'])).toBe(2);
+  /**
+   * The rule, stated at its sharpest: a maximal run is ONE sequence whatever its
+   * length. This assertion used to read 2, which encoded window-counting, the
+   * interpretation the project explicitly rejected.
+   */
+  it('counts a run of five as one sequence, not two overlapping windows', () => {
+    expect(countSequences(['AAAAA', 'CTGCC', 'CAGCG', 'TTCCC', 'TATTA'])).toBe(1);
+  });
+
+  /**
+   * The exact shape that hid the randomGrid bug: two four-runs of one base,
+   * stacked in a column, are contiguous and collinear, so they are one maximal
+   * run of eight and the grid is a human. A window-counting oracle scores this 5
+   * and calls it a mutant.
+   */
+  it('counts a column of eight as one sequence, so the grid is not a mutant', () => {
+    const dna = [
+      'AGCTTTAC',
+      'GGATGGAC',
+      'TCGAGCAC',
+      'AAGGCGTC',
+      'CGCTCCGC',
+      'CACTCGTC',
+      'TTTCGGCC',
+      'CGACACGC',
+    ];
+    expect(countSequences(dna)).toBe(1);
   });
 });
 
@@ -379,11 +435,12 @@ describe('randomGrid', () => {
     }
   });
 
-  it('plants two intact, non-overlapping runs on a deterministic draw', () => {
+  it('plants two intact, non-overlapping runs of different bases on a deterministic draw', () => {
     const grid = randomGrid(5, true, () => 0);
 
     // An rng pinned to 0 always picks the first option, so the placements are
-    // the ones randomGrid itself would choose. Both runs are 'A' (BASES[0]).
+    // the ones randomGrid itself would choose. The first run takes BASES[0] = 'A'
+    // and the second the first base that is not 'A', which is 'T'.
     const placements = runPlacements(5);
     const first = placements[0]!;
     const second = placements.filter((p) => !overlaps(p, first))[0]!;
@@ -391,8 +448,26 @@ describe('randomGrid', () => {
     expect(overlaps(first, second)).toBe(false);
     for (const [r, c] of first.cells) expect(grid[r]![c]).toBe('A');
     // The second run survives the first: this is exactly what used to fail.
-    for (const [r, c] of second.cells) expect(grid[r]![c]).toBe('A');
+    for (const [r, c] of second.cells) expect(grid[r]![c]).toBe('T');
     expect(countSequences(gridToDna(grid))).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * The structural guarantee, asserted at its source. Two same-base runs that are
+   * collinear and contiguous merge into one maximal run, so the non-overlap check
+   * alone still let "Force a mutant" produce a human roughly once every couple of
+   * thousand draws at n >= 8. Two runs of DIFFERENT letters cannot merge, because
+   * a maximal run is all one letter. So a forced mutant must always show at least
+   * two distinct letters among its runs, and that is what makes it a mutant
+   * whatever the base grid does around it.
+   */
+  it('always plants two runs of different bases, so they can never merge', () => {
+    for (let n = 4; n <= MAX_N; n += 1) {
+      for (let seed = 1; seed <= 100; seed += 1) {
+        const letters = sequenceLetters(gridToDna(randomGrid(n, true, lcg(seed))));
+        expect(new Set(letters).size, `n=${n} seed=${seed}`).toBeGreaterThanOrEqual(2);
+      }
+    }
   });
 
   it('leaves the run-free base grid alone when a human is asked for', () => {

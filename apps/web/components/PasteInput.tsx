@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { validateDna } from '@rif/shared';
-import { MAX_N } from '@/lib/constants';
+import { MAX_GRID_SIZE } from '@/lib/constants';
 import { parsePaste } from '@/lib/grid';
 import styles from '@/app/console.module.css';
 
@@ -26,13 +26,16 @@ export function PasteInput({ onApply }: PasteInputProps) {
       return;
     }
     // The shared validator is the source of truth for the rules the API applies:
-    // square, N x N, only A/T/C/G, and N within bounds. MAX_N is passed as the
-    // upper bound because the editor cannot render anything larger.
+    // square, N x N, only A/T/C/G, and N within bounds. The bound is
+    // MAX_GRID_SIZE, matching the backend, NOT the stepper's MAX_N: paste used to
+    // check against MAX_N and so refused to load a valid 16 x 16 grid that the API
+    // accepts. The editor renders whatever it is handed (rowsToGrid keeps every
+    // row at its pasted length), so there was never a rendering reason either.
     //
     // A rejected paste is not applied at all. It used to be loaded anyway with a
     // warning, which meant a 4 by 6 paste silently became a 4 by 4 grid the user
     // never typed and could then submit for a verdict.
-    const check = validateDna(parsed.rows, MAX_N);
+    const check = validateDna(parsed.rows, MAX_GRID_SIZE);
     if (!check.valid) {
       setMessage({ kind: 'warn', text: `Nothing was loaded. ${sentence(check.message)}` });
       return;

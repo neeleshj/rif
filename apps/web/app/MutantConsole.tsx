@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { normaliseDna, validateDna } from '@rif/shared';
 import { submitMutant } from '@/lib/api';
 import { runBulk, type BulkSummary } from '@/lib/bulk';
-import { BULK_CONCURRENCY, BULK_COUNT, DEFAULT_N, MAX_N, MAX_UI_GRID, MIN_N } from '@/lib/constants';
+import { BULK_CONCURRENCY, BULK_COUNT, DEFAULT_N, MAX_GRID_SIZE, MAX_N, MIN_N } from '@/lib/constants';
 import {
   createGrid,
   emptyCount,
@@ -31,6 +31,8 @@ const MODES: { id: Mode; label: string }[] = [
   { id: 'random', label: 'Random' },
 ];
 
+// Clamps the stepper only. A pasted grid can legitimately be larger than MAX_N
+// and is not run through this.
 const clampSize = (n: number) => Math.max(MIN_N, Math.min(MAX_N, n));
 
 type BulkState =
@@ -114,7 +116,7 @@ export function MutantConsole() {
       return;
     }
     const dna = normaliseDna(gridToDna(grid));
-    const check = validateDna(dna, MAX_UI_GRID);
+    const check = validateDna(dna, MAX_GRID_SIZE);
     if (!check.valid) {
       setSubmitError(check.message);
       return;

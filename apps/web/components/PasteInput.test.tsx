@@ -47,16 +47,32 @@ describe('PasteInput', () => {
     expect(screen.getByText(/Nothing was loaded\. Grid too small/i)).toBeTruthy();
   });
 
-  it('rejects a grid genuinely larger than the editor maximum', async () => {
+  /**
+   * The regression: paste validated against MAX_N (the stepper's bound, 12), so a
+   * square 16 x 16 grid of valid bases that the API happily accepts could not be
+   * entered at all. A stepper bound is not a validity bound. This must load.
+   */
+  it('loads a valid 16 by 16 grid, which is larger than the stepper maximum', async () => {
     const onApply = vi.fn();
     render(<PasteInput onApply={onApply} />);
-    // 13 x 13 is square and all valid bases, so the size cap is the only reason
-    // to refuse it. MAX_N is 12.
+    const rows = Array.from({ length: 16 }, () => 'ATGC'.repeat(4));
     await userEvent.click(textarea());
-    await userEvent.paste(Array.from({ length: 13 }, () => 'A'.repeat(13)).join('\n'));
+    await userEvent.paste(rows.join('\n'));
+    await userEvent.click(loadButton());
+    expect(onApply).toHaveBeenCalledWith(rows);
+    expect(screen.getByText(/Loaded a 16 by 16 grid/i)).toBeTruthy();
+  });
+
+  // The client still refuses a grid past the cap the backend enforces, so the two
+  // agree rather than the client inventing a stricter rule of its own.
+  it('rejects a grid larger than the backend cap', async () => {
+    const onApply = vi.fn();
+    render(<PasteInput onApply={onApply} />);
+    await userEvent.click(textarea());
+    await userEvent.paste(Array.from({ length: 1001 }, () => 'A'.repeat(1001)).join('\n'));
     await userEvent.click(loadButton());
     expect(onApply).not.toHaveBeenCalled();
-    expect(screen.getByText(/Nothing was loaded\. Grid too large: N=13 exceeds 12/i)).toBeTruthy();
+    expect(screen.getByText(/Nothing was loaded\. Grid too large: N=1001 exceeds 1000/i)).toBeTruthy();
   });
 
   /**
