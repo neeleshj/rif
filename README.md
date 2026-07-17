@@ -41,6 +41,7 @@ not just the final instructions.
   - [Testing](#testing)
   - [Observability](#observability)
   - [Repository and setup](#repository-and-setup)
+  - [Build](#build)
 
 ---
 
@@ -77,47 +78,55 @@ TCACTG
 
 ## Deliverables (from the test)
 
-- [ ] **1. Algorithm:** implement `isMutant` as efficiently as possible.
-- [ ] **2. REST API:** `POST /mutant/` accepting `{"dna":[...]}`; returns
-      **200 OK** if mutant, **403 Forbidden** otherwise.
-- [ ] **3. Database:** persist every verified DNA, **one record per DNA**.
-- [ ] **4. Stats endpoint:** `GET /stats/` returning
-      `{"count_mutant_dna", "count_human_dna", "ratio"}`.
-- [ ] **5. Scalability:** tolerate traffic from **100 to 1,000,000 req/s**.
-- [ ] **6. Automated tests:** code coverage **> 80%**.
-- [ ] **7. Frontend:** a UI to input the DNA strings.
-- [ ] **8. Architecture diagram:** of the overall solution.
-- [ ] **9. README:** instructions on how to run everything (this file).
+- [x] **1. Algorithm:** `isMutant` in `apps/api/src/algorithm`, O(N^2) with
+      early-exit at the second sequence.
+- [x] **2. REST API:** `POST /mutant/` (Fastify), 200 mutant / 403 not / 400
+      malformed.
+- [x] **3. Database:** PostgreSQL, append-only `dna_records` plus materialised
+      `dna_stats`.
+- [x] **4. Stats endpoint:** `GET /stats/` returning the counts and ratio from
+      maintained counters.
+- [x] **5. Scalability:** queue + batched writes and cached-counter reads built
+      locally; the 100 to 1M req/s path is designed and documented (not deployed).
+- [x] **6. Automated tests:** Vitest, `apps/api` at ~93% and `apps/web` at ~98%,
+      both over the 80% bar.
+- [x] **7. Frontend:** Next.js page with grid, paste, and random input modes.
+- [x] **8. Architecture diagram:** see [ARCHITECTURE.md](ARCHITECTURE.md).
+- [x] **9. README:** run instructions below; this file is also the dev log.
 
 ---
 
 ## How to Run
 
-> The repository scaffold is created in the build phase (see [PLAN.md](PLAN.md));
-> these are the intended run instructions.
-
-**Prerequisites:** Node 20+, PostgreSQL 14+ (or a cloud connection string), and
-corepack (bundled with Node).
+**Prerequisites:** Node 20+ and PostgreSQL 14+ (or a cloud connection string).
+npm ships with Node, so there is nothing else to install.
 
 ```bash
-# 1. Enable pnpm (no global install needed)
-corepack enable
+# 1. Install all workspaces
+npm install
 
-# 2. Install all workspaces
-pnpm install
-
-# 3. Configure environment
+# 2. Configure environment
 cp .env.example .env
 #    then set DATABASE_URL (and any overrides) in .env
 
-# 4. Create the schema (tables, dna_ratio function, seed row)
-pnpm db:setup
+# 3. Create the schema (tables, dna_ratio function, seed row)
+npm run db:setup
 
-# 5. Run everything (API on :3001, web on :3000)
-pnpm dev
+# 4. Run everything (API on :3001, web on :3000)
+npm run dev
 ```
 
-Other scripts: `pnpm test` (all tests with coverage), `pnpm build`, `pnpm lint`.
+Other scripts: `npm test` (all tests with coverage), `npm run build`,
+`npm run lint`, `npm run typecheck`.
+
+**Testing the API directly:** import
+`postman/RIF-Mutant-Detector.postman_collection.json` into Postman and hit Run.
+It covers every endpoint and the whole error contract, and each request asserts
+its expected status and body. It also runs headless:
+
+```bash
+npx newman run postman/RIF-Mutant-Detector.postman_collection.json
+```
 
 ---
 
@@ -221,8 +230,24 @@ path with a **queue**:
    hard crash still loses the un-flushed batch: in-process buffering is
    at-most-once for whatever is in memory.
 5. **Counter timing:** increment at enqueue (in memory, atomic), so `/stats/`
-   stays fast and correct. A failed batch leaves the counter slightly ahead of
-   durable rows, the same eventual-consistency trade.
+   stays fast and correct. The counter is briefly ahead of durable rows until the
+   batch commits, the same eventual-consistency trade.
+6. **Reconcile on a failed flush:** enqueue-time counting has a sharp edge I did
+   not think through at first. If a batch fails to commit (Postgres restarts, the
+   connection drops), the batch is already spliced out of the buffer and lost, but
+   those records were counted. The counter would then stay permanently ahead of
+   what is durable, and `/stats/` would over-report until the next restart, at
+   which point `counters.load()` re-seeds from `dna_stats` and the numbers
+   visibly *decrease*. Silent over-reporting that resolves as a jump backwards is
+   worse than either failure alone. So a dropped batch now rolls its mutant/human
+   tally back out of the counters and logs the reconcile. I kept the enqueue-time
+   increment: it is the whole point of the fast path. Only the failure path
+   reconciles. I deliberately do **not** re-buffer the failed batch: a persistent
+   failure would then grow the buffer without bound, defeating the very cap that
+   makes load shedding work. The batch stays lost (at-most-once), and the counters
+   now tell the truth about that. The queue reports the dropped tally through an
+   `onFlushFailure` callback rather than importing the counters, so it stays free
+   of any stats dependency.
 
 The queue sits behind a small interface (`enqueue()` / a worker that drains), so
 the local in-process implementation swaps cleanly for a durable, shared one.
@@ -296,21 +321,21 @@ context.
 
 **Custom sub-agents** (in `.claude/agents/`), one per gap:
 
-- **`fastify-api`** — the backend: Fastify routing and schema validation, the
+- **`fastify-api`**: the backend: Fastify routing and schema validation, the
   Postgres data layer, and the queue, batch worker, and counters. Owns the error
   contract (400 for malformed input, 403 for valid-but-non-mutant).
-- **`nextjs-frontend`** — the Next.js DNA-input page and API calls. Delegates
+- **`nextjs-frontend`**: the Next.js DNA-input page and API calls. Delegates
   visual/UX work to the existing design skills.
-- **`test-author`** — Vitest unit and integration tests, targeting >80% coverage,
+- **`test-author`**: Vitest unit and integration tests, targeting >80% coverage,
   biased toward the algorithm edge cases.
-- **`performance`** — load testing (autocannon / k6), queue backpressure checks,
+- **`performance`**: load testing (autocannon / k6), queue backpressure checks,
   and Lighthouse on the frontend.
 
 **Reused, not rebuilt:**
 
-- **UX/UI** — the existing `frontend-design` and `ui-ux-pro-max` skills, invoked
+- **UX/UI**: the existing `frontend-design` and `ui-ux-pro-max` skills, invoked
   by `nextjs-frontend`.
-- **Review** — the `code-reviewer` agent and the `setup-code-review` post-commit
+- **Review**: the `code-reviewer` agent and the `setup-code-review` post-commit
   hook, both part of my existing global setup, so nothing is installed per-project
   here.
 
@@ -400,30 +425,112 @@ the simplest with a clean early-exit.
 
 **Edge cases:**
 
-- `N < 4`: no sequence is possible, so it returns `false`.
+- `N < 4`: no sequence is possible, so the pure function returns `false`. It
+  keeps this guard so it stays total for any `N x N` input, but in practice the
+  API layer rejects a sub-4 grid with a `400` before it ever reaches here (see
+  the API section for that interpretation). The guard is the algorithm's
+  business; the HTTP meaning is the route's.
 - Input is **normalised** (uppercased) and validated at the API layer; the pure
-  function assumes a well-formed `N x N` grid of `A/T/C/G`. Malformed input
-  (non-square, characters outside `ATCG`, empty) is rejected there with a `400`.
+  function assumes a well-formed `N x N` grid of `A/T/C/G`. Input that cannot be
+  evaluated (non-square, characters outside `ATCG`, empty, or smaller than
+  `4x4`) is rejected there with a `400`.
 
 ### API
 
 **`POST /mutant/`**
 
 - Request: `{ "dna": ["ATGCGA", ...] }`, `Content-Type: application/json`.
-- Responses: `200` mutant, `403` not mutant, `400` malformed, with a small body
-  `{ "isMutant": true|false }`. The status code is the contract; the body is a
-  convenience for the frontend.
+- Responses: `200` mutant, `403` not mutant, `400` malformed or not evaluable,
+  with a small body `{ "isMutant": true|false, "message": "..." }`. The status
+  code is the contract; the body is a convenience for the frontend.
 - Persistence: a record is written on `200` and `403` only; a `400` writes
   nothing.
 - Note: the spec repurposes `403` to mean "not a mutant" rather than its usual
   "forbidden". If auth were ever added, auth failures would use `401`, keeping
   `403` for the spec's meaning.
 
+**Every response explains itself**
+
+I added a `message` field to the `200` and `403` bodies, matching the `message`
+the `400`s already returned. Previously a non-mutant returned a bare
+`{ "isMutant": false }`, which is correct but uninformative: "I evaluated this
+and found fewer than two sequences" and "this grid could never contain a
+sequence" produced an identical body. Each outcome now carries its own accurate
+message, and `isMutant` is unchanged, so the addition is purely additive for
+clients.
+
+**Interpretation: a grid smaller than 4x4 is a `400`, not a `403`**
+
+I read a sub-4 grid as a client error rather than "not a mutant", in the same
+spirit as the "1 record per DNA" reading:
+
+- A grid below `4x4` cannot contain a sequence of four, so it cannot be
+  meaningfully evaluated against the rule at all. Reporting "not a mutant" for
+  an input that was never evaluable is less informative than saying why.
+- A `403` persists the record, which would inflate `count_human_dna` with
+  inputs that were never evaluated, polluting the stats. A `400` writes nothing
+  and keeps the counters meaningful.
+
+The honest caveat: the spec defines the input as an `N x N` table and sets no
+minimum for `N`, so this is my reading rather than something the spec mandates.
+A reviewer who reads the spec strictly would expect `403` here.
+
+The rule lives in `packages/shared` (`validateDna`, with a `MIN_GRID_SIZE`
+constant beside the `maxGridSize` cap rather than a magic number), so the API
+and the frontend share one contract definition. `403` therefore now has exactly
+one meaning: evaluable DNA with fewer than two sequences.
+
+**`GET /health`**
+
+- Response `200`: `{ "status": "ok", "checks": { "database": "ok" } }`.
+- Response `503`: `{ "status": "error", "checks": { "database": "error" } }`.
+
+It started as a probe that returned `200` whenever the process was alive, which
+made it useless as a load-balancer probe: the API would report healthy with a
+dead database, so the balancer would keep routing traffic to an instance that
+could not serve it. It now verifies the one dependency the API has with a cheap
+`SELECT 1`, reports each check by name, and answers `503` rather than a raw
+`500` when the database is unreachable. The query is raced against a short
+timeout (1s), so a hung database fails the probe fast instead of hanging it,
+which is the failure mode that actually hurts: a probe that never answers ties
+up the balancer's check slots.
+
+On liveness vs readiness: strictly these are different questions, and this
+endpoint answers both. Liveness asks "is this process broken, should I restart
+it?" and should **not** check dependencies, because a dead database is not a
+reason to kill an otherwise healthy process (it would restart every instance
+during a database blip, adding a thundering herd to an outage). Readiness asks
+"can this instance serve traffic right now?" and **should** check dependencies.
+A single dependency-checking `/health` is the pragmatic choice for a local,
+single-process project. A production setup would split them: `/health` for
+liveness (process-only, no dependency checks) and `/ready` for readiness (the
+`SELECT 1`), with the orchestrator restarting on the former and pulling
+instances out of the load-balancer pool on the latter.
+
+Worth noting what I found while exercising this: if the database is already
+unreachable at boot, the process never starts serving at all, because the
+counters load from Postgres before `listen`. So the `503` path only applies to a
+database that dies underneath a running API, which is exactly the case a
+readiness probe exists to catch. I verified it against a running instance by
+proxying the connection and killing the proxy mid-flight.
+
 **`GET /stats/`**
 
 - Response `200`: `{ "count_mutant_dna", "count_human_dna", "ratio" }`.
 - Served from the in-memory counters (O(1)); `ratio = mutant / human`, and `0`
   when there are no humans.
+- **On `ratio: 0` with zero humans.** This is a deliberate choice with a real
+  trade-off, so I want to state it plainly rather than let it read as an
+  oversight. `mutant / 0` has no meaningful value, and the spec fixes `ratio` as
+  a number, so the alternatives were `null` (off-contract), `Infinity` (not valid
+  JSON), or `0`. I chose `0`. The cost: `0` is ambiguous. "100 mutants and no
+  humans" and "no mutants at all" both report `ratio: 0`, and a client cannot
+  tell them apart from the ratio alone. I accept that because the two counts sit
+  right beside it in the same response, so the disambiguating information is
+  never actually missing: `count_mutant_dna` separates the two cases exactly. The
+  ambiguity is confined to one field of a response that already carries the
+  answer. `dna_ratio()` in SQL returns `0` for the same input, so the API and the
+  database agree on the edge case.
 - Freshness is exposed via HTTP headers (`Last-Modified`, `Cache-Control:
   max-age=1`, `Age`), not the body, so the body stays exactly the spec's three
   fields. Stats are eventually consistent with bounded staleness (about one
@@ -434,9 +541,11 @@ the simplest with a clean early-exit.
 - Normalise: uppercase the input.
 - Reject as `400`: missing `dna`, not a non-empty array of strings, any string
   whose length differs from the array length (`N x N`), any character outside
-  `A/T/C/G`, a grid larger than a max size cap (guards oversized-grid abuse), or
-  a body over the size limit.
-- `N < 4` is valid DNA and returns `403` (not a mutant), not `400`.
+  `A/T/C/G`, a grid smaller than `MIN_GRID_SIZE` (`4`, see the interpretation
+  above), a grid larger than a max size cap (guards oversized-grid abuse), or a
+  body over the size limit.
+- Gate order matters: the size bounds are checked before squareness, so a `2x2`
+  input reports "too small" rather than a misleading squareness error.
 
 **Cross-cutting, implemented**
 
@@ -444,7 +553,7 @@ the simplest with a clean early-exit.
   system; distinct from per-client rate limiting.
 - CORS for the frontend origin.
 - Security headers (`@fastify/helmet`).
-- `GET /health` for readiness / liveness.
+- `GET /health` for readiness / liveness, checking its dependencies (below).
 - Structured logging (pino, built into Fastify), sampled at high volume.
 - Consistent error body `{ error, message }` for all `400`s.
 
@@ -552,16 +661,33 @@ mutant, `403` not, `400` invalid.
 Vitest across both apps, targeting **> 80% coverage** in a test-pyramid shape,
 owned by the `test-author` agent.
 
+**The coverage bar is enforced, not aspirational.** I had configured coverage
+reporters but no thresholds, so the number was only ever *printed*. Coverage
+could have rotted to 60% and `npm test` would still have exited `0`, quietly
+failing a requirement the spec states outright. A bar nobody enforces is a
+comment. The API config now sets real `thresholds`, so the suite fails below
+them. I set them just under the current actuals (about 94% statements) rather
+than at the 80% floor: pinning to the floor would license a 14-point silent
+slide back down. I proved the failure is real by breaching a threshold
+deliberately and watching the run exit non-zero with all 80 tests still passing.
+
 **Backend:**
 
 - **Unit (algorithm):** the mutant example, a clear non-mutant, the one-sequence
   boundary (false), all four directions, a long run counted once, `N < 4`, and
   normalisation / validation cases.
-- **Integration (API):** the `200` / `403` / `400` paths, a record written on
-  200/403 but not 400, and `/stats/` counts and ratio (including `ratio: 0` with
+- **Integration (API):** the `200` / `403` / `400` paths (including a sub-4 grid
+  as a `400` that writes nothing), the explanatory `message` on each outcome, a
+  record written on 200/403 but not 400, `/health` on both the ok and the
+  database-down path, and `/stats/` counts and ratio (including `ratio: 0` with
   no humans).
 - **Queue:** batched flush occurs, backpressure sheds load (`503`) when full, and
-  counters stay consistent with accepted requests.
+  counters stay consistent with accepted requests. A failed flush drops its batch
+  and rolls the counters back, so `/stats/` never reports more than is durable;
+  the load-bearing test drives that end to end through `buildServer`.
+- **Metrics:** a queue-full `503` increments `rif_load_shed_total` and leaves
+  `rif_errors_total` at zero, while a genuine `5xx` (including a `503` from
+  `/health` on a dead database) still counts as an error.
 - **DB isolation:** a dedicated local test database with transaction rollback or
   truncate between tests, for deterministic, independent runs.
 
@@ -596,9 +722,33 @@ is unmanageable), while metrics scale with the bounded number of series.
   counters already double as metrics.
 - **Tracing:** optional, OpenTelemetry with heavy sampling in the deployed config.
 
-Locally we could expose a simple `/metrics` with a few counters and a latency
-histogram; the full stack (Prometheus + Grafana + log aggregation + tracing) is a
-documented production concern.
+Locally I expose a simple `GET /metrics` as a demonstration of this: a Prometheus
+text endpoint with a latency histogram (`rif_request_duration_seconds` by route),
+counters (`rif_requests_total` labelled by route and status, plus
+`rif_mutant_total` / `rif_human_total` / `rif_errors_total` /
+`rif_load_shed_total`), and gauges for the two load-bearing signals,
+`rif_queue_depth` and `rif_buffer_fill_ratio` (the buffer fill approaching `1.0`
+is the onset of `503` load shedding).
+
+**Shed load is not an error.** I originally counted every `5xx` into
+`rif_errors_total`, which quietly contradicted my own stance elsewhere in this
+log: the `503` from a full write queue is the system working as designed, not a
+fault. As written, any error-rate alert would fire precisely when backpressure
+was working correctly, which is the fastest way to teach a team to ignore the
+alert. The write path's `503` now increments its own `rif_load_shed_total`, so
+shed load stays fully observable without being mistaken for a server fault, and
+`rif_errors_total` means what its name says. The split is deliberately narrow: a
+`503` from `/health` means the database is unreachable, which *is* a real fault
+and still counts as an error. Both counters are unlabelled, so this costs two
+series and no cardinality. This also lines up the backend with the frontend,
+where `bulk.ts` already tallied `503` separately from errors. Timing is
+wired through a Fastify `onRequest` / `onResponse` hook, and labels are kept to
+`route` (the matched route pattern) and `status` only, never DNA or ids, so the
+series count stays bounded at any request volume. I added `prom-client` for this:
+it is the idiomatic, lightweight way to aggregate metrics in-process for a Node
+service and render Prometheus text, with no framework baggage. The full stack
+(Prometheus + Grafana + log aggregation + tracing) remains a documented
+production concern. Load scripts that exercise these paths live in `load/`.
 
 ### Repository and setup
 
@@ -619,8 +769,9 @@ rif/
   .env.example
 ```
 
-- **Package manager: pnpm via corepack** (`corepack enable`), so no global
-  install is needed; the idiomatic Turborepo pairing.
+- **Package manager: npm workspaces.** npm ships with Node, so there is no extra
+  tooling to install. Chosen over pnpm to keep setup friction minimal for a
+  reviewer who may not have pnpm or corepack configured.
 - **`packages/shared`** holds the request/response types and light validation
   helpers used by both the API and the frontend, so the contract lives in one
   place.
@@ -629,8 +780,109 @@ rif/
 
 - API: `API_PORT`, `DATABASE_URL`, `NODE_ENV`, `MAX_GRID_SIZE`, `QUEUE_MAX_SIZE`,
   `BATCH_SIZE`, `BATCH_INTERVAL_MS`, `LOG_LEVEL`, `LOG_SAMPLE_RATE`.
-- Web: `WEB_PORT`, `BACKEND_URL` (server-side only, used by the `/api` route
-  handlers to forward to Fastify).
+- Web: `BACKEND_URL` (server-side only, used by the `/api` route handlers to
+  forward to Fastify). The web port is Next's default 3000; to change it set
+  `PORT` in the shell, not in `.env`, since Next reads the port before `.env`
+  loads.
+
+**Loading the root `.env` (`dotenv`).** I kept the single repo-root `.env` as the
+one place a reviewer configures, which is deliberate: two apps, one file to edit.
+Nothing actually loaded it, though, so the documented setup path was broken.
+`npm run db:setup` failed with "Missing required environment variable
+DATABASE_URL" because npm runs workspace scripts with cwd `apps/api`, and Next
+auto-loads `.env` only from `apps/web`, not the monorepo root, so `BACKEND_URL`
+was undefined for the server-side route handlers too. Both apps now load the root
+file explicitly, which is why I added `dotenv`, the one new dependency here. I
+resolve the path from the module's own URL rather than cwd, so it holds whether
+the API runs from `src` under tsx or from the built `dist`. Node's native
+`--env-file` would have avoided the dependency, but it needs Node 20.6+ and would
+have to work through tsx and Next alike, so dotenv was the safer choice. Real
+environment variables still win over file values, keeping CI and shell overrides
+working.
+
+**Turbo and the environment.** Turborepo does not read `.env` files, so the
+in-process loading above is what makes config work. Turbo 2 defaults to strict
+env mode, though, so I declared the project's variables in `globalEnv` for tasks
+to inherit them when they are set in the real environment, and listed the root
+`.env` in `globalDependencies` so editing config invalidates the cache instead of
+serving a stale build or test result.
+
+Exercising the setup path end to end turned up two more breakages in it. Turbo
+2.10 refuses to resolve the workspace without a `packageManager` field in the
+root `package.json`, so every `turbo` script, including the documented
+`npm run dev`, failed before it started; I pinned `npm@10.9.0`, matching the npm
+that ships with Node 22. And `npm test` exited non-zero because `packages/shared`
+had no test files and `vitest run` treats that as a failure.
+
+**Package manager: npm over pnpm.** I originally reached for pnpm, the idiomatic
+Turborepo pairing, but switched. pnpm needs `corepack enable` or a global install
+as a prerequisite, and the broken corepack on my machine proved the point: for a
+test whose whole value is that a reviewer can clone and run it, one fewer setup
+step wins. npm ships with Node and npm workspaces cover everything needed here.
+
+**Fixes from running the documented commands.** Continuing to exercise each
+command a reviewer might type turned up four more issues, none of which tests or
+typecheck could have caught:
+
+- `npm run lint` failed because `packages/shared` had a `lint` script but no
+  ESLint config and no ESLint dependency, so it was never functional. Removed it,
+  matching `apps/api`, which also has none. Linting therefore covers the Next app
+  (via `eslint-config-next`), with strict TypeScript carrying the rest. Adding
+  full ESLint across every package is a reasonable follow-up.
+- `npm start -w @rif/api` crashed: `@rif/shared` shipped raw TypeScript, so plain
+  node could not import it and the built artifact was unrunnable even though
+  `npm run build` passed. `@rif/shared` is now compiled (`tsc` to `dist`, with
+  `exports` pointing at the built output and a `prepare` script so `npm install`
+  builds it automatically). `turbo`'s `dev` task now also `dependsOn: ["^build"]`.
+- `WEB_PORT` never worked. `next dev -p ${WEB_PORT:-3000}` is shell expansion,
+  evaluated before any config loads, so it always used 3000 while advertising
+  itself as configurable. Removed rather than faked; the port is Next's default
+  and `PORT` in the shell overrides it.
+- Test files were not typechecked (`tsconfig.json` included only `src`). Split
+  into `tsconfig.json` (src + test, for typecheck and the editor) and
+  `tsconfig.build.json` (src only, so tests stay out of `dist`).
+
+`packages/shared` now has its own tests for the validation helpers, so
+`--passWithNoTests` is gone. Writing them promptly repaid the effort: the suite
+immediately caught a bad test of mine.
+
+**API collection.** `postman/` holds an importable Postman collection covering
+every endpoint and the full error contract, with assertions on each request so it
+can be run as a suite (also runnable headless via
+`npx newman run postman/RIF-Mutant-Detector.postman_collection.json`).
 
 Full diagrams are in [ARCHITECTURE.md](ARCHITECTURE.md); the phased build plan
 with agent delegation is in [PLAN.md](PLAN.md).
+
+### Build
+
+The build followed [PLAN.md](PLAN.md), with the main agent scaffolding and
+coordinating and each phase delegated to its sub-agent (as defined in
+`.claude/agents/`), consistent with the working model.
+
+**What was built:**
+
+- **`apps/api`** (Fastify): the pure `isMutant` algorithm, the postgres.js data
+  layer with the batched-insert-plus-counter transaction, the bounded write queue
+  with backpressure and SIGTERM drain, the `/mutant/`, `/stats/`, `/health`, and
+  `/metrics` routes, normalisation/validation, CORS, helmet, and sampled logging.
+- **`apps/web`** (Next.js): a single console page with the grid, paste, and random
+  input modes over one grid state, the `/api` route handlers forwarding to the
+  backend, client-side validation, and an accessible themed UI.
+- **`packages/shared`**: the request/response contract and validation helpers used
+  by both sides.
+- **`load/`**: autocannon and k6 scripts with a run guide.
+
+**Verification (in this environment):**
+
+- Backend: 59 Vitest tests, ~93% coverage; the algorithm verified against every
+  spec case.
+- Frontend: 87 Vitest tests, ~98% coverage; typecheck and lint clean. Playwright
+  E2E specs are authored and run locally once `@playwright/test` is installed.
+- Performance: the real server (against an in-memory DB stand-in) sustained
+  ~24.5k req/s on `/mutant/` (p99 3 ms) and ~37.4k req/s on `/stats/`, and
+  backpressure shed load as designed under saturation. Lighthouse: accessibility
+  1.0, performance 0.75.
+- Not runnable here: the DB-backed paths and full-flow load, which need a live
+  PostgreSQL. The code is dependency-injected so these are covered by mocked tests
+  and are straightforward to run locally per How to Run.

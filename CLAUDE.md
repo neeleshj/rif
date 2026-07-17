@@ -44,9 +44,19 @@ per-project).
 
 ## Encoded decisions
 
-- **Error contract:** `400` for malformed input (non-square grid, characters
-  outside `ATCG`, empty), `403` for a valid DNA that is not a mutant, `200` for a
-  mutant.
+- **Error contract:** `200` for a mutant. `403` for **evaluable** DNA (`N >= 4`)
+  with fewer than two sequences. `400` for input that cannot be evaluated:
+  non-square, characters outside `ATCG`, empty, missing, or a grid smaller than
+  `4x4`. **Nothing is persisted on a `400`.** Every `/mutant/` response carries a
+  `message` explaining its outcome, so a `403` says *why* it is a `403`.
+- **Minimum grid size:** `N < 4` is a **`400`, not a `403`**. A sub-4 grid can
+  never contain a sequence of four, so it is a client error rather than "not a
+  mutant", and rejecting it keeps unevaluable input out of the stats. This is a
+  deliberate reading: the spec sets no minimum for `N`. The rule lives in
+  `packages/shared` (`MIN_GRID_SIZE`) so the API and frontend share one
+  definition; do not hardcode `4` elsewhere.
+- **Health:** `GET /health` verifies the database (`SELECT 1`, short timeout) and
+  returns `503` when it is down. It does not report healthy on a dead DB.
 - **Algorithm:** slide a length-4 window in four directions; **early-exit the
   moment the second sequence is found**.
 - **Persistence:** append-only rows `(id, dna, is_mutant, created_at)`. "1 record

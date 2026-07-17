@@ -20,13 +20,12 @@ behaviour, the `verify` skill.
 ## Phase 0 — Scaffold and tooling  ·  main agent
 
 - Turborepo monorepo: `apps/api`, `apps/web`, `packages/shared`.
-- pnpm workspaces (via corepack), `turbo.json` with `dev` / `build` / `test` /
-  `lint` pipelines.
+- npm workspaces, `turbo.json` with `dev` / `build` / `test` / `lint` pipelines.
 - Shared TypeScript config, ESLint, Vitest at the root.
 - `.env.example` with all variables (see [Repository and setup](README.md#repository-and-setup)).
 - Root scripts: `dev`, `build`, `test`, `lint`, `db:setup`.
 
-**Depends on:** nothing. **Deliverable:** `pnpm install && pnpm dev` boots empty
+**Depends on:** nothing. **Deliverable:** `npm install && npm run dev` boots empty
 apps.
 
 ## Phase 1 — Shared contract  ·  `fastify-api` (with `packages/shared`)
@@ -39,7 +38,7 @@ apps.
 ## Phase 2 — Backend core  ·  `fastify-api`
 
 - `schema.sql`: `dna_records`, `dna_stats`, `dna_ratio` function, seed row; wired
-  to `pnpm db:setup`.
+  to `npm run db:setup`.
 - Data layer with a lightweight client (`postgres.js` / `pg`): batched insert +
   transactional counter update; boot-load counters.
 - `isMutant` algorithm (pure, per the pseudocode in the dev log).
