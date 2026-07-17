@@ -773,6 +773,39 @@ deliberately and watching the run exit non-zero with all 80 tests still passing.
 - **E2E:** a few Playwright smokes (happy path plus a validation-error path) for
   whole-flow confidence, not for coverage.
 
+**Measured** (`npm test`):
+
+| Package | Tests | Statements | Branches | Functions |
+| ------- | ----: | ---------: | -------: | --------: |
+| `packages/shared` | 15 | 100% | 100% | 100% |
+| `apps/api` | 80 | 94.25% | 97.35% | 94.87% |
+| `apps/web` | 170 | 98.45% | 97.17% | 96.92% |
+| **Total** | **265** | | | |
+
+All comfortably past the spec's 80% bar, but the headline percentage is the least
+interesting part. **Every module carrying real logic is at 100%**: `isMutant`,
+`writeQueue`, `counters`, all three routes, `config`, and `env`. The shortfall is
+concentrated in bootstrap and glue, which is the right shape. 94% spread evenly,
+with holes in the algorithm, would be a far worse result than 94% with the
+algorithm at 100%.
+
+The thresholds are **enforced rather than reported**: vitest fails the run when
+coverage drops below them, so it cannot quietly regress. Reporting alone would
+have let the spec's requirement rot silently.
+
+What is deliberately uncovered, and why:
+
+- **`apps/api/src/index.ts` (65%)**: the `start()` bootstrap, `listen`, and
+  SIGTERM path. Covering it means binding a port and killing a process, so it is
+  verified by running the app instead. `buildServer`, which holds the logic, is
+  dependency-injected and fully covered.
+- **`apps/web/lib/grid.ts` line 196**: the run-free fill's abandon-and-retry
+  branch. It needs four different three-in-a-rows of distinct bases converging on
+  one cell, roughly 1 grid in 5,000 at `n=12`. It is reachable, so the code
+  handles it, but no seed in 1,800 attempts hit it; `blockedBases` is tested
+  directly instead.
+- **`apps/api/src/db/client.ts` (50% funcs)**: a thin connection factory.
+
 ### Observability
 
 Discussion and documentation only, beyond a basic local demonstration.
