@@ -40,6 +40,7 @@ not just the final instructions.
   - [Frontend](#frontend)
   - [Testing](#testing)
   - [Observability](#observability)
+  - [Tools](#tools)
   - [Repository and setup](#repository-and-setup)
   - [Build](#build)
 
@@ -856,6 +857,65 @@ it is the idiomatic, lightweight way to aggregate metrics in-process for a Node
 service and render Prometheus text, with no framework baggage. The full stack
 (Prometheus + Grafana + log aggregation + tracing) remains a documented
 production concern. Load scripts that exercise these paths live in `load/`.
+
+### Tools
+
+Short notes on the third-party tools, what each one is, and why it is here.
+
+**Build and runtime**
+
+- **Turborepo**: a task runner for monorepos. It knows the dependency graph
+  between packages, so `npm test` builds `packages/shared` before testing the
+  apps that consume it, runs independent tasks in parallel, and caches results so
+  unchanged packages are skipped.
+- **Fastify**: the API framework. Chosen over Express for speed, first-class
+  TypeScript, and built-in JSON-schema validation, which the payload needs anyway.
+- **postgres.js**: a lightweight Postgres client, deliberately not an ORM. The
+  write path needs direct control of multi-row `INSERT` batching and the
+  transactional counter update; an ORM would add overhead and hide exactly the
+  part that matters here.
+- **pino**: structured JSON logging, built into Fastify, and fast because it
+  writes asynchronously off the request path.
+- **dotenv**: loads the single repo-root `.env` into `process.env`. Needed because
+  nothing else does it: npm runs workspace scripts from the package directory and
+  Turborepo does not read `.env` files.
+
+**Testing**
+
+- **Vitest**: the test runner across all three packages, so backend, frontend, and
+  shared code share one tool and one coverage report.
+- **React Testing Library**: drives components the way a user does (find by text
+  and role, click, type) rather than by poking internals, so tests survive
+  refactors.
+- **happy-dom**: a lightweight DOM implementation so component tests run in Node
+  without a browser.
+- **MSW (Mock Service Worker)**: intercepts `fetch` at the network layer, so the
+  frontend can be tested against realistic `200` / `403` / `400` / `503`
+  responses without a live API, and without stubbing `fetch` by hand.
+- **Playwright**: real-browser end-to-end smokes. Deliberately a thin layer:
+  slower and more brittle than component tests, so it covers whole-flow
+  confidence rather than logic.
+- **Postman / newman**: an importable API collection with assertions on every
+  request. Postman for clicking through by hand, newman to run the same
+  collection headless in a terminal or CI.
+
+**Performance and observability**
+
+- **autocannon**: an HTTP load generator (the Node equivalent of `wrk`). Two knobs
+  matter: `connections` (how many sockets) and `pipelining` (how many requests
+  each socket sends without waiting), so requests in flight is roughly
+  `connections x pipelining`. That product is what actually loads the server, and
+  it is why the read run's higher latency is queueing rather than a slower
+  endpoint. Chosen over k6, which does the same job but needs a separate binary
+  installed.
+- **prom-client / Prometheus**: Prometheus is the standard metrics system. The app
+  never pushes anything; it exposes current values as text at `GET /metrics` and a
+  Prometheus server scrapes that endpoint every few seconds. That is what makes
+  metrics affordable at high traffic: values are aggregated in memory and read
+  once per scrape no matter how many requests arrive. `prom-client` maintains the
+  counters (only go up), gauges (go up and down, like queue depth), and histograms
+  (distributions, giving latency percentiles).
+- **Lighthouse**: audits the built frontend for performance and accessibility.
 
 ### Repository and setup
 
