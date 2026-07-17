@@ -28,6 +28,10 @@ dist/
 # Test coverage
 coverage/
 
+# Playwright output
+test-results/
+playwright-report/
+
 # Logs
 *.log
 

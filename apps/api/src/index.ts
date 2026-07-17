@@ -11,7 +11,7 @@
  */
 
 import { pathToFileURL } from 'node:url';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -20,6 +20,7 @@ import type { Config } from './config.js';
 import { loadConfig } from './config.js';
 import { loadRootEnv } from './env.js';
 import { createClient } from './db/client.js';
+import { classifyStartupError, formatStartupError, redactDatabaseUrl, runDbPreflight } from './db/preflight.js';
 import { Counters } from './stats/counters.js';
 import { createWriteQueue } from './queue/writeQueue.js';
 import type { WriteQueue } from './queue/writeQueue.js';
@@ -39,12 +40,15 @@ export interface BuiltServer {
 /** Build the fully wired server. Does not connect, load, or listen. */
 export function buildServer(config: Config, sql: Sql): BuiltServer {
   const app = Fastify({
-    // Both /mutant and /mutant/ resolve, sparing clients a trailing-slash trap.
-    ignoreTrailingSlash: true,
+    routerOptions: {
+      // Both /mutant and /mutant/ resolve, sparing clients a trailing-slash trap.
+      ignoreTrailingSlash: true,
+    },
     // Reject oversized bodies before they reach a handler.
     bodyLimit: ONE_MEGABYTE,
-    // We do our own sampled logging in the onResponse hook below.
-    disableRequestLogging: true,
+    // We do our own sampled logging in the onResponse hook below, so Fastify's
+    // built-in per-request lines stay off.
+    logController: new LogController({ disableRequestLogging: true }),
     logger: { level: config.logLevel },
   });
 
@@ -116,7 +120,30 @@ export async function start(): Promise<void> {
   const sql = createClient(config.databaseUrl);
   const { app, counters, queue } = buildServer(config, sql);
 
-  await counters.load(sql);
+  try {
+    // Seeding the counters is also the connection check: it is the first query
+    // the process makes, so a database that is down or unmigrated surfaces here.
+    await runDbPreflight(() => counters.load(sql), {
+      onRetry: (attempt, err) => {
+        app.log.debug({ err, attempt }, 'database not reachable yet, retrying');
+      },
+    });
+  } catch (err: unknown) {
+    // Fail fast rather than boot degraded. The API cannot answer /mutant/ or
+    // /stats/ without Postgres, and starting anyway would leave /stats/
+    // reporting a confident zero that looks like real data instead of an
+    // outage. Refusing to start is the honest failure.
+    //
+    // The raw error stays at debug level for whoever needs the stack; the
+    // default level gets the short actionable message on stderr.
+    app.log.debug({ err }, 'database preflight failed');
+    // eslint-disable-next-line no-console
+    console.error(`\n${formatStartupError(classifyStartupError(err), redactDatabaseUrl(config.databaseUrl))}\n`);
+    // Close the pool so the process can exit without a dangling handle.
+    await sql.end({ timeout: 5 }).catch(() => {});
+    process.exit(1);
+  }
+
   queue.start();
 
   const shutdown = (signal: string): void => {
