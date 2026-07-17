@@ -12,6 +12,10 @@ Thumbs.db
 .env.*
 !.env.example
 
+# The test brief itself. Kept locally for reference, deliberately not committed:
+# it is RIF's material, not mine to republish.
+*.pdf
+
 # Dependencies
 node_modules/
 
