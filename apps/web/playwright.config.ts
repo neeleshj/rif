@@ -24,7 +24,10 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: `node_modules/.bin/next dev -p ${PORT}`,
+    // npx, not a hardcoded bin path: npm workspaces hoist dependencies to the
+    // repo-root node_modules, so apps/web/node_modules/.bin/next does not exist.
+    // npx walks up the tree and finds it wherever the install put it.
+    command: `npx next dev -p ${PORT}`,
     url: BASE_URL,
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
