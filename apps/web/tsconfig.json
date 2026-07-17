@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "allowJs": true,
+    "noEmit": true,
+    "incremental": true,
+    "isolatedModules": true,
+    "declaration": false,
+    "declarationMap": false,
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  // e2e/ and playwright.config.ts are typechecked by Playwright's own toolchain
+  // once @playwright/test is installed; excluded here so `tsc --noEmit` stays
+  // green without that dependency present.
+  "exclude": ["node_modules", "e2e", "playwright.config.ts"]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@rif/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@rif/shared": "*",
+    "dotenv": "^16.6.1",
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^20.16.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^15.1.6",
+    "happy-dom": "^15.11.0",
+    "msw": "^2.7.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
