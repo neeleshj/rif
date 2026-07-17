@@ -9,7 +9,9 @@
  *   comes first, a single transaction does a multi-row INSERT into dna_records
  *   AND an UPDATE of dna_stats (increment counts, set updated_at).
  * - Graceful drain: drain() stops the timer and flushes what remains, wired to
- *   SIGTERM via the server's onClose hook.
+ *   SIGTERM via the server's onClose hook. A drain against a healthy database
+ *   flushes every buffered record. A drain against an unavailable one gives up
+ *   fast (see drain() below) rather than retrying batch by batch.
  *
  * A hard crash still loses whatever is in memory (at-most-once for the buffer),
  * a deliberate trade documented in the dev log Scalability section.
@@ -35,7 +37,11 @@ export interface WriteQueue {
   enqueue(record: WriteRecord): boolean;
   /** Start the interval-driven batch worker. */
   start(): void;
-  /** Stop the worker and flush everything still buffered. */
+  /**
+   * Stop the worker and flush everything still buffered. Bounded: it gives up on
+   * the first flush failure or at drainTimeoutMs, whichever comes first, and
+   * discards the rest rather than retrying against a dead database.
+   */
   drain(): Promise<void>;
   /** Current buffer depth (for tests and metrics). */
   size(): number;
@@ -53,6 +59,8 @@ export interface WriteQueueDeps {
     queueMaxSize: number;
     batchSize: number;
     batchIntervalMs: number;
+    /** Overall wall-clock budget for drain() on shutdown. */
+    drainTimeoutMs: number;
   };
   logger: Pick<FastifyBaseLogger, 'info' | 'error'>;
   /**
@@ -82,8 +90,17 @@ export function createWriteQueue({
 }: WriteQueueDeps): WriteQueue {
   const buffer: WriteRecord[] = [];
   let timer: NodeJS.Timeout | undefined;
-  // A single in-flight flush at a time; callers await the same promise.
-  let activeFlush: Promise<void> | null = null;
+  // A single in-flight flush at a time; callers await the same promise. Resolves
+  // true when the pass emptied the buffer, false when a batch failed.
+  let activeFlush: Promise<boolean> | null = null;
+  // Set once drain() has given up, so an in-flight pass stops taking new batches
+  // instead of racing the discard below for the same records.
+  let stopped = false;
+  // The batch currently inside sql.begin. It is already out of the buffer, so if
+  // drain() gives up while a flush hangs, this is the only handle left on those
+  // records: without it their counters would never be rolled back. `settled`
+  // marks who accounted for the batch, so it is rolled back exactly once.
+  let inFlight: { counts: BatchTally; size: number; settled: boolean } | null = null;
 
   async function flushBatch(batch: WriteRecord[], counts: BatchTally): Promise<void> {
     const { mutants, humans } = counts;
@@ -103,13 +120,27 @@ export function createWriteQueue({
     });
   }
 
-  async function doFlush(): Promise<void> {
-    while (buffer.length > 0) {
+  /** Flush batches until the buffer is empty. Resolves false if a batch failed. */
+  async function doFlush(): Promise<boolean> {
+    while (buffer.length > 0 && !stopped) {
       const batch = buffer.splice(0, config.batchSize);
       const counts = tally(batch);
+      const entry = { counts, size: batch.length, settled: false };
+      inFlight = entry;
       try {
         await flushBatch(batch, counts);
+        if (inFlight === entry) inFlight = null;
+        // A drain deadline may have fired mid-flight and already rolled this
+        // batch back. The rows are durable, so the counters now under-report
+        // until the next restart re-seeds them from dna_stats. That errs on the
+        // safe side (never claiming more than is stored) and the process is on
+        // its way out regardless.
+        if (entry.settled) return false;
       } catch (err) {
+        if (inFlight === entry) inFlight = null;
+        // Already accounted for by abandonInFlight(); do not roll back twice.
+        if (entry.settled) return false;
+        entry.settled = true;
         // The batch is already out of the buffer, so it is lost (at-most-once).
         // We do not re-buffer it: a persistent failure would then grow the
         // buffer without bound, defeating the very cap that makes load shedding
@@ -120,17 +151,80 @@ export function createWriteQueue({
           { err, dropped: batch.length, rolledBackMutants: counts.mutants, rolledBackHumans: counts.humans },
           'write queue flush failed: batch dropped and counters rolled back',
         );
-        return;
+        return false;
       }
     }
+    return true;
   }
 
-  function flush(): Promise<void> {
+  function flush(): Promise<boolean> {
     if (activeFlush) return activeFlush;
     activeFlush = doFlush().finally(() => {
       activeFlush = null;
     });
     return activeFlush;
+  }
+
+  /**
+   * Discard everything still buffered, rolling the counters back by its tally so
+   * the in-memory stats never claim more than is durably stored. Used only once
+   * drain() has decided the database is not coming back in time.
+   */
+  function discardBuffer(reason: string): number {
+    if (buffer.length === 0) return 0;
+    const lost = buffer.splice(0, buffer.length);
+    const counts = tally(lost);
+    onFlushFailure?.(counts);
+    logger.error(
+      {
+        reason,
+        dropped: lost.length,
+        rolledBackMutants: counts.mutants,
+        rolledBackHumans: counts.humans,
+      },
+      'write queue drain gave up: buffered records dropped and counters rolled back',
+    );
+    return lost.length;
+  }
+
+  /**
+   * Roll back the batch parked inside a flush we are about to walk away from.
+   * It left the buffer before it hung, so discardBuffer() cannot see it, and
+   * without this its counts would survive as an over-report.
+   */
+  function abandonInFlight(): number {
+    const entry = inFlight;
+    if (!entry || entry.settled) return 0;
+    entry.settled = true; // doFlush will skip its own rollback when it settles
+    inFlight = null;
+    onFlushFailure?.(entry.counts);
+    logger.error(
+      {
+        dropped: entry.size,
+        rolledBackMutants: entry.counts.mutants,
+        rolledBackHumans: entry.counts.humans,
+      },
+      'write queue drain abandoned an in-flight batch: counters rolled back',
+    );
+    return entry.size;
+  }
+
+  /** Resolve `value` or, after `ms`, resolve `onTimeout`. Never keeps the loop alive. */
+  function withDeadline<T>(value: Promise<T>, ms: number, onTimeout: T): Promise<T> {
+    return new Promise<T>((resolve) => {
+      const t = setTimeout(() => resolve(onTimeout), ms);
+      t.unref();
+      void value.then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        () => {
+          clearTimeout(t);
+          resolve(onTimeout);
+        },
+      );
+    });
   }
 
   return {
@@ -157,11 +251,37 @@ export function createWriteQueue({
         clearInterval(timer);
         timer = undefined;
       }
-      // Flush repeatedly until the buffer is empty, awaiting any in-flight pass.
+
+      // Shutdown must be bounded. A healthy pass empties the buffer in one go
+      // (doFlush loops internally), so the loop below normally runs once; it
+      // re-checks only to catch records enqueued alongside an in-flight pass.
+      //
+      // When the database is gone, retrying batch by batch is pure cost: each
+      // attempt pays the full connect/query timeout and every record is dropped
+      // anyway. So we stop at the FIRST failure, and cap the whole drain with a
+      // deadline in case a single flush hangs rather than failing. Whatever is
+      // left is discarded loudly, with the counters rolled back to match.
+      const started = Date.now();
+      const deadline = started + config.drainTimeoutMs;
+      let dropped = 0;
       while (buffer.length > 0 || activeFlush) {
-        await flush();
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          stopped = true;
+          dropped = discardBuffer('drain timeout exceeded') + abandonInFlight();
+          break;
+        }
+        // `false` on timeout: treat a hung flush exactly like a failed one.
+        const ok = await withDeadline(flush(), remaining, false);
+        if (!ok) {
+          stopped = true;
+          // abandonInFlight() is a no-op when the flush actually failed (it rolled
+          // its own batch back); it only bites when the deadline beat a hung one.
+          dropped = discardBuffer('flush failed during drain') + abandonInFlight();
+          break;
+        }
       }
-      logger.info({}, 'write queue drained');
+      logger.info({ dropped, durationMs: Date.now() - started }, 'write queue drained');
     },
 
     size(): number {

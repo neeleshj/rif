@@ -18,6 +18,12 @@ export interface Config {
   batchSize: number;
   /** Flush a batch at least this often, in milliseconds. */
   batchIntervalMs: number;
+  /**
+   * Wall-clock budget for draining the write queue on SIGTERM. A healthy drain
+   * finishes well inside this; an unreachable database makes shutdown give up
+   * here rather than retry every batch against a database that is not answering.
+   */
+  drainTimeoutMs: number;
   logLevel: string;
   /** Fraction (0..1) of successful requests to log; all errors are always kept. */
   logSampleRate: number;
@@ -73,6 +79,7 @@ export function loadConfig(env: Env = process.env): Config {
     queueMaxSize: parseIntEnv(env, 'QUEUE_MAX_SIZE', 100000),
     batchSize: parseIntEnv(env, 'BATCH_SIZE', 500),
     batchIntervalMs: parseIntEnv(env, 'BATCH_INTERVAL_MS', 100),
+    drainTimeoutMs: parseIntEnv(env, 'DRAIN_TIMEOUT_MS', 5000),
     logLevel: env.LOG_LEVEL ?? 'info',
     logSampleRate: parseFloatEnv(env, 'LOG_SAMPLE_RATE', 0.001, 0, 1),
     webOrigin: env.WEB_ORIGIN ?? 'http://localhost:3000',

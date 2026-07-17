@@ -36,12 +36,31 @@ export interface FakeSql {
   readonly flushes: FlushCapture[];
   /** Number of committed flush transactions. */
   readonly flushCount: number;
+  /**
+   * Number of times sql.begin() was entered, committed or not. Lets a test show
+   * that drain() stops attempting batches instead of retrying batch by batch.
+   */
+  readonly beginAttempts: number;
   /** True once sql.end() has been called (shutdown). */
   readonly ended: boolean;
   /** Total records across all flushes (durable rows). */
   totalPersisted(): number;
   /** Make the next flush transaction throw, to exercise the drop path. */
   failNextFlush(): void;
+  /** Make every flush transaction throw, standing in for an unreachable database. */
+  failAllFlushes(): void;
+  /**
+   * Make every flush transaction hang forever, standing in for a wedged database
+   * that accepts the connection but never answers. Exercises the drain deadline.
+   */
+  hangFlushes(): void;
+  /**
+   * Settle every flush currently parked by hangFlushes(), standing in for a
+   * wedged database that eventually answers after the drain deadline already
+   * walked away from it. 'commit' completes the transaction as normal (the rows
+   * become durable); 'reject' fails it. Returns how many were parked.
+   */
+  releaseHungFlushes(outcome: 'commit' | 'reject'): number;
   /** Rows the next SELECT (Counters.load) resolves with. */
   setSelectRows(rows: unknown[]): void;
   /** Make every SELECT reject, standing in for an unreachable database. */
@@ -58,10 +77,20 @@ interface RowsFragment {
   __rows: Array<{ dna: string; is_mutant: boolean }>;
 }
 
+/** A flush transaction parked by hangFlushes(), awaiting releaseHungFlushes(). */
+interface HungFlush {
+  fn: (tx: unknown) => Promise<void>;
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 export function makeFakeSql(initialSelectRows: unknown[] = []): FakeSql {
   const flushes: FlushCapture[] = [];
   let flushCount = 0;
+  let beginAttempts = 0;
   let failNext = false;
+  let beginMode: 'ok' | 'fail' | 'hang' = 'ok';
+  const hung: HungFlush[] = [];
   let ended = false;
   let selectRows = initialSelectRows;
   let selectMode: 'ok' | 'fail' | 'hang' = 'ok';
@@ -101,19 +130,35 @@ export function makeFakeSql(initialSelectRows: unknown[] = []): FakeSql {
 
   const sql = callable as unknown as Sql;
 
-  (sql as unknown as { begin: (fn: (tx: unknown) => Promise<void>) => Promise<void> }).begin = async (
-    fn: (tx: unknown) => Promise<void>,
-  ): Promise<void> => {
-    if (failNext) {
-      failNext = false;
-      throw new Error('flush failed (simulated)');
-    }
+  /** Run the transaction body and record it as a committed flush. */
+  const commit = async (fn: (tx: unknown) => Promise<void>): Promise<void> => {
     capInsert = null;
     capMutants = 0;
     capHumans = 0;
     await fn(callable);
     flushCount += 1;
     flushes.push({ rows: capInsert ?? [], mutants: capMutants, humans: capHumans });
+  };
+
+  (sql as unknown as { begin: (fn: (tx: unknown) => Promise<void>) => Promise<void> }).begin = async (
+    fn: (tx: unknown) => Promise<void>,
+  ): Promise<void> => {
+    beginAttempts += 1;
+    if (beginMode === 'hang') {
+      // Park the transaction. It never settles on its own; only
+      // releaseHungFlushes() can finish it.
+      return new Promise<void>((resolve, reject) => {
+        hung.push({ fn, resolve, reject });
+      });
+    }
+    if (beginMode === 'fail') {
+      throw new Error('connection refused (simulated)');
+    }
+    if (failNext) {
+      failNext = false;
+      throw new Error('flush failed (simulated)');
+    }
+    await commit(fn);
   };
 
   (sql as unknown as { end: (opts?: unknown) => Promise<void> }).end = async (): Promise<void> => {
@@ -126,6 +171,9 @@ export function makeFakeSql(initialSelectRows: unknown[] = []): FakeSql {
     get flushCount() {
       return flushCount;
     },
+    get beginAttempts() {
+      return beginAttempts;
+    },
     get ended() {
       return ended;
     },
@@ -134,6 +182,23 @@ export function makeFakeSql(initialSelectRows: unknown[] = []): FakeSql {
     },
     failNextFlush() {
       failNext = true;
+    },
+    failAllFlushes() {
+      beginMode = 'fail';
+    },
+    hangFlushes() {
+      beginMode = 'hang';
+    },
+    releaseHungFlushes(outcome: 'commit' | 'reject') {
+      const parked = hung.splice(0, hung.length);
+      for (const flush of parked) {
+        if (outcome === 'commit') {
+          void commit(flush.fn).then(flush.resolve, flush.reject);
+        } else {
+          flush.reject(new Error('connection reset (simulated)'));
+        }
+      }
+      return parked.length;
     },
     setSelectRows(rows: unknown[]) {
       selectRows = rows;
@@ -158,6 +223,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     // Large batch and interval so nothing auto-flushes mid-test unless asked.
     batchSize: 1000,
     batchIntervalMs: 100000,
+    drainTimeoutMs: 5000,
     logLevel: 'silent',
     logSampleRate: 0,
     webOrigin: 'http://localhost:3000',
