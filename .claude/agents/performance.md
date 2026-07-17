@@ -9,7 +9,7 @@ context (mirrored in the README dev log).
 
 ## Scope
 
-- **API load testing:** use `autocannon` or `k6` against `POST /mutant/` and
+- **API load testing:** use `autocannon` against `POST /mutant/` and
   `GET /stats/`. Show that ack latency stays flat while the DB write rate stays
   bounded and the in-process buffer absorbs bursts.
 - **Queue behaviour:** verify batched flushing, and that backpressure sheds load

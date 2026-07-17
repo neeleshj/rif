@@ -24,18 +24,19 @@ flowchart LR
     User([User / Browser])
 
     subgraph Web["Next.js  ·  apps/web"]
-        UI["DNA input page<br/>grid · paste · random"]
+        UI["DNA input page<br/>grid · paste · random · bulk"]
         APIR["/api route handlers<br/>validate + forward"]
     end
 
     subgraph API["Fastify  ·  apps/api"]
         direction TB
-        RT["Routes<br/>POST /mutant/ · GET /stats/ · GET /health"]
+        RT["Routes<br/>POST /mutant/ · GET /stats/<br/>GET /health · GET /metrics"]
         VAL["Normalise + validate"]
         ALG["isMutant algorithm"]
         CNT["In-memory counters"]
         Q["Bounded write queue"]
         W["Batch flush worker"]
+        MET["Prometheus registry<br/>counters · histogram · gauges"]
     end
 
     DB[("PostgreSQL<br/>dna_records · dna_stats")]
@@ -45,9 +46,23 @@ flowchart LR
     ALG --> CNT
     ALG --> Q
     Q --> W -->|"batched INSERT + counter update (one txn)"| DB
+    W -.->|"flush failed: roll counters back"| CNT
+    Q -.->|"full: 503 load shed"| RT
     RT -->|"/stats reads"| CNT
+    RT -->|"/health: SELECT 1"| DB
+    Q -.->|depth / fill| MET
     DB -.->|boot load| CNT
 ```
+
+Notes the diagram cannot show:
+
+- **`/health` checks its dependency.** It runs `SELECT 1` against Postgres with a
+  short timeout and answers `503` when the database is unreachable, rather than
+  reporting healthy because the process happens to be alive.
+- **The queue is bounded.** When it fills, `POST /mutant/` sheds load with `503`
+  instead of buffering until the process dies.
+- **A failed flush rolls the counters back**, so `/stats/` never reports more
+  than is durably stored.
 
 ---
 
@@ -70,16 +85,23 @@ sequenceDiagram
     B->>N: POST /api/mutant { dna }
     N->>N: fast validation
     N->>F: forward POST /mutant/
-    F->>F: normalise + validate (authoritative)
-    alt malformed
-        F-->>B: 400 (nothing written)
-    else valid
+    F->>F: normalise (uppercase) + validate (authoritative)
+    alt not evaluable (non-square, bad chars, empty, or N < 4)
+        F-->>B: 400 + message (nothing written)
+    else queue full
+        F-->>B: 503 load shed (nothing written)
+        Note over F: bounded buffer, so shed rather than grow until OOM
+    else evaluable
         F->>F: isMutant() -> boolean
-        F->>F: increment counter (in memory)
+        F->>F: increment counter (in memory, at enqueue)
         F->>Q: enqueue { dna, isMutant, ts }
-        F-->>B: 200 mutant / 403 not mutant
+        F-->>B: 200 mutant / 403 not mutant, each + message
         Note over Q,W: async, off the response path
         W->>DB: batched INSERT + UPDATE dna_stats (single txn)
+        opt flush fails
+            W->>F: roll counters back by the dropped batch
+            Note over W,F: so /stats/ never exceeds what is durable
+        end
     end
 ```
 

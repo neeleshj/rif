@@ -80,17 +80,19 @@ TCACTG
 
 - [x] **1. Algorithm:** `isMutant` in `apps/api/src/algorithm`, O(N^2) with
       early-exit at the second sequence.
-- [x] **2. REST API:** `POST /mutant/` (Fastify), 200 mutant / 403 not / 400
-      malformed.
+- [x] **2. REST API:** `POST /mutant/` (Fastify): 200 mutant, 403 evaluable but
+      not a mutant, 400 not evaluable, each with a message explaining itself.
 - [x] **3. Database:** PostgreSQL, append-only `dna_records` plus materialised
       `dna_stats`.
 - [x] **4. Stats endpoint:** `GET /stats/` returning the counts and ratio from
       maintained counters.
 - [x] **5. Scalability:** queue + batched writes and cached-counter reads built
       locally; the 100 to 1M req/s path is designed and documented (not deployed).
-- [x] **6. Automated tests:** Vitest, `apps/api` at ~93% and `apps/web` at ~98%,
-      both over the 80% bar.
-- [x] **7. Frontend:** Next.js page with grid, paste, and random input modes.
+- [x] **6. Automated tests:** Vitest, 265 tests. `apps/api` 94.25%, `apps/web`
+      98.45%, `packages/shared` 100%, with the thresholds enforced rather than
+      only reported.
+- [x] **7. Frontend:** Next.js console with grid, paste, random, and bulk-generate
+      input modes.
 - [x] **8. Architecture diagram:** see [ARCHITECTURE.md](ARCHITECTURE.md).
 - [x] **9. README:** run instructions below; this file is also the dev log.
 
@@ -400,7 +402,7 @@ context.
   visual/UX work to the existing design skills.
 - **`test-author`**: Vitest unit and integration tests, targeting >80% coverage,
   biased toward the algorithm edge cases.
-- **`performance`**: load testing (autocannon / k6), queue backpressure checks,
+- **`performance`**: load testing (autocannon), queue backpressure checks,
   and Lighthouse on the frontend.
 
 **Reused, not rebuilt:**
@@ -976,7 +978,7 @@ coordinating and each phase delegated to its sub-agent (as defined in
   backend, client-side validation, and an accessible themed UI.
 - **`packages/shared`**: the request/response contract and validation helpers used
   by both sides.
-- **`load/`**: autocannon and k6 scripts with a run guide.
+- **`load/`**: autocannon load scripts with a run guide.
 
 **Verification (in this environment):**
 

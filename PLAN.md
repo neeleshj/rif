@@ -17,7 +17,7 @@ behaviour, the `verify` skill.
 
 ---
 
-## Phase 0 — Scaffold and tooling  ·  main agent
+## Phase 0: Scaffold and tooling  ·  main agent
 
 - Turborepo monorepo: `apps/api`, `apps/web`, `packages/shared`.
 - npm workspaces, `turbo.json` with `dev` / `build` / `test` / `lint` pipelines.
@@ -28,14 +28,14 @@ behaviour, the `verify` skill.
 **Depends on:** nothing. **Deliverable:** `npm install && npm run dev` boots empty
 apps.
 
-## Phase 1 — Shared contract  ·  `fastify-api` (with `packages/shared`)
+## Phase 1: Shared contract  ·  `fastify-api` (with `packages/shared`)
 
 - Request/response types (`MutantRequest`, `StatsResponse`, error shape).
 - Light validation helpers (alphabet, square, size) reused by API and web.
 
 **Depends on:** Phase 0. **Deliverable:** `packages/shared` consumed by both apps.
 
-## Phase 2 — Backend core  ·  `fastify-api`
+## Phase 2: Backend core  ·  `fastify-api`
 
 - `schema.sql`: `dna_records`, `dna_stats`, `dna_ratio` function, seed row; wired
   to `npm run db:setup`.
@@ -50,7 +50,7 @@ apps.
 
 **Depends on:** Phase 1. **Deliverable:** API passes manual `curl` of all routes.
 
-## Phase 3 — Backend tests  ·  `test-author`
+## Phase 3: Backend tests  ·  `test-author`
 
 - Unit: algorithm edge cases (example, non-mutant, one-sequence boundary, four
   directions, long run counted once, `N < 4`, validation).
@@ -61,7 +61,7 @@ apps.
 
 **Depends on:** Phase 2. **Deliverable:** backend coverage > 80%.
 
-## Phase 4 — Frontend  ·  `nextjs-frontend` (+ design skills)
+## Phase 4: Frontend  ·  `nextjs-frontend` (+ design skills)
 
 - Single page; grid editor, paste parser, random generator over one grid state.
 - Client-side validation with clear messages.
@@ -71,7 +71,7 @@ apps.
 
 **Depends on:** Phases 1 and 2. **Deliverable:** full flow works against the API.
 
-## Phase 5 — Frontend tests  ·  `test-author`
+## Phase 5: Frontend tests  ·  `test-author`
 
 - Component: Vitest + React Testing Library + happy-dom, MSW mocking `/api`
   (grid, paste, random, validation, result rendering).
@@ -80,16 +80,16 @@ apps.
 
 **Depends on:** Phase 4. **Deliverable:** frontend coverage contributes to > 80%.
 
-## Phase 6 — Performance and observability  ·  `performance`
+## Phase 6: Performance and observability  ·  `performance`
 
-- Load scripts (`autocannon` / `k6`) for `/mutant/` and `/stats/`; report
+- Load scripts (`autocannon`) for `/mutant/` and `/stats/`; report
   throughput, latency percentiles, and that backpressure sheds load.
 - Basic `/metrics` (a few counters + a latency histogram) as a demonstration.
 - Lighthouse on the frontend.
 
 **Depends on:** Phases 2 and 4. **Deliverable:** documented local numbers.
 
-## Phase 7 — Docs and finalise  ·  main agent
+## Phase 7: Docs and finalise  ·  main agent
 
 - Finalise README "How to Run" and check `.env.example` is complete.
 - Confirm [ARCHITECTURE.md](ARCHITECTURE.md) matches the built system.
