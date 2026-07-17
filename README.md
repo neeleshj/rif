@@ -232,10 +232,40 @@ path with a **queue**:
 4. **Graceful shutdown:** a `SIGTERM` handler drains the buffer before exit. A
    hard crash still loses the un-flushed batch: in-process buffering is
    at-most-once for whatever is in memory.
-5. **Counter timing:** increment at enqueue (in memory, atomic), so `/stats/`
+5. **A bounded drain:** my first drain looped `while (buffer.length > 0)`, and
+   each pass only flushed one batch before returning on failure. Against a
+   healthy database that is fine. Against a dead one it is a trap: with the
+   defaults (`QUEUE_MAX_SIZE=100000`, `BATCH_SIZE=500`) a full buffer meant up to
+   200 sequential `sql.begin` attempts, each paying the full connect timeout,
+   before the process could exit. I measured it rather than argued about it: a
+   full buffer against a refused port took **5m 25s** to shut down, and against a
+   wedged one (sockets accepted, never answered) roughly 17s *per batch*, which
+   extrapolates to about an hour. Every record was dropped anyway, so the retries
+   bought nothing at all. The insight is that the first failure is already the
+   answer: the database is gone, so batch 2 through 200 will fail identically.
+   Drain now stops at the first failure, and caps the whole pass with
+   `DRAIN_TIMEOUT_MS` (default 5s) so a *hung* flush is treated exactly like a
+   failed one rather than blocking on a timeout that may never come. The same
+   scenarios now shut down in **5.0s** and **10.0s**. Whatever is left is
+   discarded loudly, with its tally rolled back per the reconcile rule below.
+   The periodic (non-shutdown) flush path never had this problem: a single
+   `activeFlush` promise dedupes concurrent passes, so a down database costs at
+   most one in-flight batch attempt per interval, not a grind through the buffer.
+6. **The batch you cannot see:** bounding the drain exposed a subtler leak. A
+   batch is spliced out of the buffer *before* the flush begins, so when I gave up
+   on a hung flush, that batch was invisible to the discard path: its `catch` was
+   never going to run, and the buffer no longer held it. Its counts survived as a
+   permanent over-report of up to `BATCH_SIZE`, which is precisely the failure
+   mode point 8 below exists to prevent. The queue now tracks the in-flight batch
+   so the deadline path can roll it back, with a `settled` flag so it is
+   reconciled exactly once no matter who gets there first. If an abandoned flush
+   later commits, the counters under-report until the next restart re-seeds them:
+   that direction is the safe one, since the rule is never to claim more than is
+   durably stored.
+7. **Counter timing:** increment at enqueue (in memory, atomic), so `/stats/`
    stays fast and correct. The counter is briefly ahead of durable rows until the
    batch commits, the same eventual-consistency trade.
-6. **Reconcile on a failed flush:** enqueue-time counting has a sharp edge I did
+8. **Reconcile on a failed flush:** enqueue-time counting has a sharp edge I did
    not think through at first. If a batch fails to commit (Postgres restarts, the
    connection drops), the batch is already spliced out of the buffer and lost, but
    those records were counted. The counter would then stay permanently ahead of
