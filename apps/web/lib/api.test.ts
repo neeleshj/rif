@@ -22,13 +22,13 @@ describe('submitMutant status mapping', () => {
   it('maps 400 with an error body to an invalid result', async () => {
     mutant(() =>
       HttpResponse.json(
-        { error: 'Bad Request', message: 'grid must be square' },
+        { error: 'bad_request', message: 'grid must be square' },
         { status: 400 },
       ),
     );
     expect(await submitMutant(['ATG'])).toEqual({
       kind: 'invalid',
-      error: 'Bad Request',
+      error: 'bad_request',
       message: 'grid must be square',
     });
   });
@@ -38,7 +38,7 @@ describe('submitMutant status mapping', () => {
     const result = await submitMutant(['ATG']);
     expect(result.kind).toBe('invalid');
     if (result.kind === 'invalid') {
-      expect(result.error).toBe('Bad Request');
+      expect(result.error).toBe('bad_request');
       expect(result.message).toMatch(/rejected/i);
     }
   });
@@ -64,7 +64,7 @@ describe('submitMutant status mapping', () => {
     mutant(() =>
       HttpResponse.json(
         {
-          error: 'Bad Gateway',
+          error: 'bad_gateway',
           message: 'The detector service is unreachable. Confirm the API is running.',
         },
         { status: 502 },
@@ -121,6 +121,25 @@ describe('fetchStats', () => {
     if (!result.ok) expect(result.message).toMatch(/malformed/i);
   });
 
+  /**
+   * The guard used to check only count_mutant_dna, so a partial body sailed
+   * through as ok:true and StatsView then threw a TypeError on
+   * `stats.ratio.toFixed(2)`, blanking the page. Every field the view reads has
+   * to be checked, or the guard is not a guard.
+   */
+  it.each([
+    ['ratio missing', { count_mutant_dna: 3, count_human_dna: 2 }],
+    ['count_human_dna missing', { count_mutant_dna: 3, ratio: 1.5 }],
+    ['ratio not a number', { count_mutant_dna: 3, count_human_dna: 2, ratio: '1.5' }],
+    ['a JSON null body', null],
+    ['an array body', []],
+  ])('reports a partial body as malformed rather than passing it on: %s', async (_label, body) => {
+    stats(() => HttpResponse.json(body));
+    const result = await fetchStats();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/malformed/i);
+  });
+
   it('falls back to the status code when a non-ok response has no shaped body', async () => {
     stats(() => new HttpResponse(null, { status: 502 }));
     const result = await fetchStats();
@@ -133,7 +152,7 @@ describe('fetchStats', () => {
   it('surfaces the error body message on a 502', async () => {
     stats(() =>
       HttpResponse.json(
-        { error: 'Bad Gateway', message: 'The stats service is unreachable.' },
+        { error: 'bad_gateway', message: 'The stats service is unreachable.' },
         { status: 502 },
       ),
     );

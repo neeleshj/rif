@@ -18,7 +18,8 @@ export async function GET(): Promise<NextResponse> {
     });
   } catch {
     return NextResponse.json(
-      { error: 'Bad Gateway', message: 'The stats service is unreachable.' },
+      // snake_case to match the backend's error codes, as /api/mutant does.
+      { error: 'bad_gateway', message: 'The stats service is unreachable.' },
       { status: 502 },
     );
   }

@@ -29,6 +29,6 @@ describe('GET /api/stats route handler', () => {
     const res = await GET();
     expect(res.status).toBe(502);
     const body = await res.json();
-    expect(body.error).toBe('Bad Gateway');
+    expect(body.error).toBe('bad_gateway');
   });
 });

@@ -17,6 +17,13 @@ const MAX_GRID_SIZE = parseIntEnv(process.env, 'MAX_GRID_SIZE', 1000);
 // Route handlers run on the server, so BACKEND_URL is never exposed to the browser.
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:3001';
 
+/**
+ * Error codes are the backend's, verbatim. Fastify answers a validation failure
+ * with `bad_request` and this layer used to answer the same failure with
+ * `Bad Request`; ResultView renders the field as it is given, so one problem
+ * showed the user two different strings depending on which layer caught it. The
+ * backend is authoritative on the contract, so the proxy matches it.
+ */
 function errorResponse(error: string, message: string, status: number): NextResponse<ErrorResponse> {
   return NextResponse.json({ error, message }, { status });
 }
@@ -26,7 +33,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     body = await request.json();
   } catch {
-    return errorResponse('Bad Request', 'Request body must be valid JSON.', 400);
+    return errorResponse('bad_request', 'Request body must be valid JSON.', 400);
   }
 
   const dna = (body as Partial<MutantRequest> | null)?.dna;
@@ -36,7 +43,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const check = validateDna(normalised, MAX_GRID_SIZE);
   if (!check.valid) {
-    return errorResponse('Bad Request', check.message, 400);
+    return errorResponse('bad_request', check.message, 400);
   }
 
   let upstream: Response;
@@ -48,8 +55,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       cache: 'no-store',
     });
   } catch {
+    // 502 has no backend counterpart (it means the backend never answered), but
+    // it follows the same snake_case convention so the codes read as one set.
     return errorResponse(
-      'Bad Gateway',
+      'bad_gateway',
       'The detector service is unreachable. Confirm the API is running.',
       502,
     );

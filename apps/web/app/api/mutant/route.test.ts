@@ -22,7 +22,9 @@ describe('POST /api/mutant route handler', () => {
     const res = await POST(postRequest('not json'));
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('Bad Request');
+    // The backend's spelling, which the proxy must match: ResultView renders this
+    // field verbatim, so a divergence shows two strings for one problem.
+    expect(body.error).toBe('bad_request');
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -68,18 +70,19 @@ describe('POST /api/mutant route handler', () => {
   it('relays a backend 400 body and status', async () => {
     server.use(
       http.post(`${BACKEND}/mutant/`, () =>
-        HttpResponse.json({ error: 'Bad Request', message: 'nope' }, { status: 400 }),
+        HttpResponse.json({ error: 'bad_request', message: 'nope' }, { status: 400 }),
       ),
     );
     const res = await POST(postRequest({ dna: ['ATGC', 'CAGT', 'TTAG', 'GCTA'] }));
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Bad Request', message: 'nope' });
+    expect(await res.json()).toEqual({ error: 'bad_request', message: 'nope' });
   });
 
   it('relays a backend 503 busy response', async () => {
     server.use(
       http.post(`${BACKEND}/mutant/`, () =>
-        HttpResponse.json({ error: 'Service Unavailable', message: 'busy' }, { status: 503 }),
+        // The code Fastify actually sends for a full write queue.
+        HttpResponse.json({ error: 'unavailable', message: 'busy' }, { status: 503 }),
       ),
     );
     const res = await POST(postRequest({ dna: ['ATGC', 'CAGT', 'TTAG', 'GCTA'] }));
@@ -91,6 +94,6 @@ describe('POST /api/mutant route handler', () => {
     const res = await POST(postRequest({ dna: ['ATGC', 'CAGT', 'TTAG', 'GCTA'] }));
     expect(res.status).toBe(502);
     const body = await res.json();
-    expect(body.error).toBe('Bad Gateway');
+    expect(body.error).toBe('bad_gateway');
   });
 });

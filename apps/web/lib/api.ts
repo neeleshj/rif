@@ -44,7 +44,9 @@ export async function submitMutant(dna: string[]): Promise<MutantResult> {
     if (isErrorResponse(payload)) {
       return { kind: 'invalid', error: payload.error, message: payload.message };
     }
-    return { kind: 'invalid', error: 'Bad Request', message: 'The DNA grid was rejected.' };
+    // Matches the code both the backend and the proxy send, so the fallback does
+    // not introduce a third spelling of the same failure.
+    return { kind: 'invalid', error: 'bad_request', message: 'The DNA grid was rejected.' };
   }
 
   if (res.status === 503) {
@@ -73,6 +75,23 @@ export type StatsResult =
   | { ok: true; stats: StatsResponse }
   | { ok: false; message: string };
 
+/**
+ * Every field, not just the first one. StatsView reads all three and calls
+ * `.toFixed(2)` on `ratio`, so a partial body (a truncated relay, schema drift)
+ * used to pass a `count_mutant_dna`-only guard and then throw a TypeError during
+ * render, blanking the whole page instead of showing the "malformed" message this
+ * guard exists to produce.
+ */
+function isStatsResponse(value: unknown): value is StatsResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const stats = value as Record<keyof StatsResponse, unknown>;
+  return (
+    typeof stats.count_mutant_dna === 'number' &&
+    typeof stats.count_human_dna === 'number' &&
+    typeof stats.ratio === 'number'
+  );
+}
+
 /** Fetch usage stats. Never throws; failures map to a result. */
 export async function fetchStats(): Promise<StatsResult> {
   let res: Response;
@@ -90,8 +109,8 @@ export async function fetchStats(): Promise<StatsResult> {
     }
     return { ok: false, message: `Stats unavailable (${res.status}).` };
   }
-  const payload = (await res.json().catch(() => null)) as StatsResponse | null;
-  if (!payload || typeof payload.count_mutant_dna !== 'number') {
+  const payload = await res.json().catch(() => null);
+  if (!isStatsResponse(payload)) {
     return { ok: false, message: 'Stats response was malformed.' };
   }
   return { ok: true, stats: payload };
