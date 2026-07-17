@@ -253,8 +253,9 @@ The queue sits behind a small interface (`enqueue()` / a worker that drains), so
 the local in-process implementation swaps cleanly for a durable, shared one.
 
 **Measured, not just claimed.** Rather than assert the design works, I load
-tested it. One `POST /mutant/` run against a single local instance, 50
-connections for 20 seconds, every request a mutant that persists a row:
+tested both paths against a single local instance.
+
+**Write path** (`POST /mutant/`, 50 connections, 20s, every request persists a row):
 
 | Metric | Result |
 | ------ | ------ |
@@ -263,11 +264,30 @@ connections for 20 seconds, every request a mutant that persists a row:
 | Volume | **469,060** requests in 20.01s, 460 MB read |
 | Errors | **0** shed (503), **0** 4xx |
 
-The interesting number is not the throughput, it is the **flat latency**. Nearly
-half a million writes went through at a p99 of 4 ms, because the request never
-waits on Postgres: it computes the result, enqueues, and acks, while the batch
-worker persists in the background. Ack latency is decoupled from database write
-throughput, which is the whole point of the queue.
+**Read path** (`GET /stats/`, 100 connections at pipelining 10, 15s):
+
+| Metric | Result |
+| ------ | ------ |
+| Throughput | **39,245 req/s** average (p97.5 40,031, min 36,261) |
+| Latency | p50 **19 ms**, p97.5 **46 ms**, p99 **49 ms** (avg 24.96 ms) |
+| Volume | **590,000** requests in 15.02s, 603 MB read |
+
+The interesting number on the write path is not the throughput, it is the **flat
+latency**. Nearly half a million writes went through at a p99 of 4 ms, because
+the request never waits on Postgres: it computes the result, enqueues, and acks,
+while the batch worker persists in the background. Ack latency is decoupled from
+database write throughput, which is the whole point of the queue.
+
+Reads out-throughput writes by about **1.7x** (39.2k vs 23.5k req/s), which is
+the expected shape: `/stats/` answers from the in-memory counters and never
+touches the database, so it is bounded by CPU rather than by durable writes.
+
+**The two latency figures are not comparable, and it would be misleading to read
+them as reads being slower.** The runs use deliberately different load shapes:
+the write test holds 50 requests in flight (50 connections, no pipelining), while
+the read test holds roughly 1,000 (100 connections at pipelining 10). Pipelining
+buys throughput by queueing requests, and queueing shows up as per-request
+latency. The read path's higher latency is that trade, not a slower endpoint.
 
 Zero load shedding here is also expected rather than lucky: at the default
 `QUEUE_MAX_SIZE` the buffer never fills, so nothing needs shedding. Backpressure
